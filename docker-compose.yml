@@ -18,8 +18,8 @@ services:
     build:
       context: ./frontend
       args:
-        REACT_APP_API_URL: http://localhost:2001
-        REACT_APP_WS_URL: ws://localhost:2001
+        REACT_APP_API_URL: http://188.225.56.178:2001
+        REACT_APP_WS_URL: ws://188.225.56.178:2001
     container_name: docker-log-viewer-frontend
     restart: unless-stopped
     ports:
