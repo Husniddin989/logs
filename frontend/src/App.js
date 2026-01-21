@@ -4,8 +4,11 @@ import LogViewer from './components/LogViewer';
 import SearchBar from './components/SearchBar';
 import './App.css';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:2001';
-const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:2001';
+const API_URL = process.env.REACT_APP_API_URL || '';
+const getWsUrl = () => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
+};
 
 function App() {
   const [containers, setContainers] = useState([]);
@@ -88,7 +91,7 @@ function App() {
   useEffect(() => {
     if (!selectedContainer || timeRange !== 'live') return;
 
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(getWsUrl());
     wsRef.current = ws;
 
     ws.onopen = () => {
