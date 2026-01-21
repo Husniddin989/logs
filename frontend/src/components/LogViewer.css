@@ -1,0 +1,175 @@
+.log-viewer {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background-color: #0d1117;
+  padding: 8px 0;
+  position: relative;
+  min-height: 0; /* Flexbox overflow fix */
+}
+
+.log-entries {
+  padding: 0 16px;
+}
+
+.log-entry {
+  display: flex;
+  align-items: flex-start;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 4px;
+  transition: background-color 0.15s;
+}
+
+.log-entry:hover {
+  background-color: #161b22;
+}
+
+.log-entry.error {
+  background-color: rgba(248, 81, 73, 0.1);
+}
+
+.log-entry.error:hover {
+  background-color: rgba(248, 81, 73, 0.15);
+}
+
+.log-entry.warn {
+  background-color: rgba(210, 153, 34, 0.1);
+}
+
+.log-entry.warn:hover {
+  background-color: rgba(210, 153, 34, 0.15);
+}
+
+.log-timestamp {
+  flex-shrink: 0;
+  color: #6e7681;
+  margin-right: 12px;
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 11px;
+}
+
+.log-stream {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 12px;
+  font-family: sans-serif;
+}
+
+.log-stream.stdout {
+  background-color: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+}
+
+.log-stream.stderr {
+  background-color: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+}
+
+.log-message {
+  flex: 1;
+  color: #c9d1d9;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.log-entry.error .log-message {
+  color: #f85149;
+}
+
+.log-entry.warn .log-message {
+  color: #d29922;
+}
+
+.log-entry.debug .log-message {
+  color: #8b949e;
+}
+
+.log-entry.info .log-message {
+  color: #58a6ff;
+}
+
+.highlight {
+  background-color: #634c00;
+  color: #f0e68c;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+/* No logs state */
+.no-logs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #8b949e;
+  text-align: center;
+}
+
+.waiting-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.6;
+}
+
+.waiting-icon.loading-spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.no-logs p {
+  font-size: 14px;
+}
+
+/* Scroll to bottom button */
+.scroll-to-bottom {
+  position: sticky;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: #1f6feb;
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s;
+  z-index: 10;
+  display: block;
+  margin: 0 auto;
+  width: fit-content;
+}
+
+.scroll-to-bottom:hover {
+  background-color: #388bfd;
+  transform: translateX(-50%) translateY(-2px);
+}
+
+/* JSON formatting */
+.log-message .json-key {
+  color: #79c0ff;
+}
+
+.log-message .json-string {
+  color: #a5d6ff;
+}
+
+.log-message .json-number {
+  color: #7ee787;
+}
+
+.log-message .json-boolean {
+  color: #ff7b72;
+}
