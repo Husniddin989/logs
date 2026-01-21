@@ -5,7 +5,7 @@ services:
     build: ./backend
     container_name: docker-log-viewer-backend-dev
     ports:
-      - "3001:3001"
+      - "2001:2001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./backend/src:/app/src
@@ -14,4 +14,4 @@ services:
     command: npm run dev
 
   # Frontend uchun local development
-  # npm start bilan ishlatiladi (port 3000)
+  # npm start bilan ishlatiladi (port 2000)

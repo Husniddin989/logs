@@ -6,7 +6,7 @@ services:
     container_name: docker-log-viewer-backend
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "2001:2001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
@@ -18,12 +18,12 @@ services:
     build:
       context: ./frontend
       args:
-        REACT_APP_API_URL: http://localhost:3001
-        REACT_APP_WS_URL: ws://localhost:3001
+        REACT_APP_API_URL: http://localhost:2001
+        REACT_APP_WS_URL: ws://localhost:2001
     container_name: docker-log-viewer-frontend
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "2000:80"
     depends_on:
       - backend
     networks:

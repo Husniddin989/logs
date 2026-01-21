@@ -4,8 +4,8 @@ import LogViewer from './components/LogViewer';
 import SearchBar from './components/SearchBar';
 import './App.css';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
-const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:3001';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:2001';
+const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:2001';
 
 function App() {
   const [containers, setContainers] = useState([]);

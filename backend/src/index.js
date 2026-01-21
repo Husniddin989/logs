@@ -262,7 +262,7 @@ app.get('/api/docker/info', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 2001;
 server.listen(PORT, () => {
   console.log(`🚀 Docker Log Viewer API running on port ${PORT}`);
   console.log(`📡 WebSocket server ready for connections`);
