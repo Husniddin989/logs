@@ -340,7 +340,7 @@ app.get('/api/containers', authMiddleware, async (req, res) => {
   }
 });
 
-// Get container logs (with access check)
+// Get container logs (with access check) - OPTIMIZED with pagination
 app.get('/api/containers/:id/logs', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
@@ -360,7 +360,11 @@ app.get('/api/containers/:id/logs', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Access denied to this container' });
     }
 
-    const { tail, since, until, search, timeRange } = req.query;
+    const { tail, since, until, search, timeRange, page, limit } = req.query;
+
+    // Pagination parameters
+    const pageNum = parseInt(page) || 1;
+    const pageLimit = Math.min(parseInt(limit) || 500, 2000); // Max 2000 logs per page
 
     const options = {
       stdout: true,
@@ -399,17 +403,36 @@ app.get('/api/containers/:id/logs', authMiddleware, async (req, res) => {
     }
 
     const logs = await container.logs(options);
-    const logLines = parseDockerLogs(logs);
+    let logLines = parseDockerLogs(logs);
 
-    let filteredLogs = logLines;
+    // Filter by search if provided
     if (search) {
       const searchLower = search.toLowerCase();
-      filteredLogs = logLines.filter(log =>
+      logLines = logLines.filter(log =>
         log.message.toLowerCase().includes(searchLower)
       );
     }
 
-    res.json(filteredLogs);
+    // Calculate pagination
+    const totalLogs = logLines.length;
+    const totalPages = Math.ceil(totalLogs / pageLimit);
+    const startIndex = (pageNum - 1) * pageLimit;
+    const endIndex = startIndex + pageLimit;
+
+    // Get paginated logs
+    const paginatedLogs = logLines.slice(startIndex, endIndex);
+
+    // Return with pagination metadata
+    res.json({
+      logs: paginatedLogs,
+      pagination: {
+        page: pageNum,
+        limit: pageLimit,
+        totalLogs,
+        totalPages,
+        hasMore: pageNum < totalPages
+      }
+    });
   } catch (error) {
     console.error('Error fetching logs:', error);
     res.status(500).json({ error: 'Failed to fetch logs' });

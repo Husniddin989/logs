@@ -1,81 +1,125 @@
-import React, { useEffect, useRef, useState, useLayoutEffect } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { FixedSizeList as List } from 'react-window';
 import './LogViewer.css';
 
-function LogViewer({ logs, searchTerm, isStreaming, isLoading }) {
+// Memoized log row component for better performance
+const LogRow = React.memo(({ data, index, style }) => {
+  const { logs, searchTerm, getLogLevel, formatTimestamp, highlightText } = data;
+  const log = logs[index];
+
+  if (!log) return null;
+
+  return (
+    <div style={style} className={`log-entry ${getLogLevel(log)}`}>
+      <span className="log-timestamp">
+        {formatTimestamp(log.timestamp)}
+      </span>
+      <span className={`log-stream ${log.stream}`}>
+        {log.stream === 'stderr' ? 'ERR' : 'OUT'}
+      </span>
+      <span className="log-message">
+        {highlightText(log.message, searchTerm)}
+      </span>
+    </div>
+  );
+});
+
+function LogViewer({ logs, searchTerm, isStreaming, isLoading, onLoadMore, hasMore, pagination }) {
+  const listRef = useRef(null);
   const containerRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
-  const isUserScrolling = useRef(false);
   const lastLogCount = useRef(0);
+  const [containerHeight, setContainerHeight] = useState(500);
 
-  // Auto-scroll to bottom when new logs arrive
-  useLayoutEffect(() => {
-    if (!containerRef.current) return;
+  // Row height
+  const ROW_HEIGHT = 36;
 
-    // Yangi log qo'shilganda va autoScroll yoqiq bo'lsa
-    if (autoScroll && logs.length > lastLogCount.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+  // Update container height on resize
+  useEffect(() => {
+    const updateHeight = () => {
+      if (containerRef.current) {
+        const height = containerRef.current.clientHeight;
+        if (height > 0) {
+          setContainerHeight(height);
+        }
+      }
+    };
+
+    updateHeight();
+    window.addEventListener('resize', updateHeight);
+
+    // Use ResizeObserver for more accurate tracking
+    const resizeObserver = new ResizeObserver(updateHeight);
+    if (containerRef.current) {
+      resizeObserver.observe(containerRef.current);
     }
 
-    lastLogCount.current = logs.length;
-  }, [logs, autoScroll]);
+    return () => {
+      window.removeEventListener('resize', updateHeight);
+      resizeObserver.disconnect();
+    };
+  }, []);
 
-  // Container tanlanganda scroll reset
+  // Auto-scroll to bottom when new logs arrive
   useEffect(() => {
-    if (containerRef.current && logs.length === 0) {
+    if (listRef.current && autoScroll && logs.length > lastLogCount.current && logs.length > 0) {
+      listRef.current.scrollToItem(logs.length - 1, 'end');
+    }
+    lastLogCount.current = logs.length;
+  }, [logs.length, autoScroll]);
+
+  // Reset auto-scroll when logs are cleared
+  useEffect(() => {
+    if (logs.length === 0) {
       setAutoScroll(true);
     }
   }, [logs.length]);
 
-  // Detect manual scroll to disable auto-scroll
-  const handleScroll = () => {
-    if (!containerRef.current || isUserScrolling.current) return;
+  // Handle scroll events for auto-scroll detection and infinite loading
+  const handleScroll = useCallback(({ scrollOffset, scrollUpdateWasRequested }) => {
+    if (scrollUpdateWasRequested) return;
 
-    const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
-    const isAtBottom = scrollHeight - scrollTop - clientHeight < 100;
+    const totalHeight = logs.length * ROW_HEIGHT;
+    const isAtBottom = totalHeight - scrollOffset - containerHeight < 100;
+    const isAtTop = scrollOffset < 100;
 
-    // Faqat scroll holatida o'zgartirish
-    if (isAtBottom !== autoScroll) {
-      setAutoScroll(isAtBottom);
+    setAutoScroll(isAtBottom);
+
+    // Load more when scrolling to top (for older logs)
+    if (isAtTop && hasMore && onLoadMore && !isLoading) {
+      onLoadMore();
     }
-  };
+  }, [logs.length, containerHeight, hasMore, onLoadMore, isLoading]);
 
-  // Mouse wheel orqali scroll qilganda
-  const handleWheel = (e) => {
-    if (e.deltaY < 0) {
-      // Yuqoriga scroll - auto-scroll o'chirish
-      setAutoScroll(false);
-    }
-  };
-
-  // Scroll to bottom and enable auto-scroll
-  const scrollToBottom = () => {
-    if (containerRef.current) {
+  // Scroll to bottom manually
+  const scrollToBottom = useCallback(() => {
+    if (listRef.current && logs.length > 0) {
       setAutoScroll(true);
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      listRef.current.scrollToItem(logs.length - 1, 'end');
     }
-  };
+  }, [logs.length]);
 
   // Highlight search term in log message
-  const highlightText = (text, term) => {
+  const highlightText = useCallback((text, term) => {
     if (!term) return text;
 
-    const parts = text.split(new RegExp(`(${escapeRegExp(term)})`, 'gi'));
-    return parts.map((part, index) =>
-      part.toLowerCase() === term.toLowerCase() ? (
-        <mark key={index} className="highlight">{part}</mark>
-      ) : (
-        part
-      )
-    );
-  };
-
-  // Escape special regex characters
-  const escapeRegExp = (string) => {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  };
+    try {
+      const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const parts = text.split(new RegExp(`(${escapedTerm})`, 'gi'));
+      return parts.map((part, index) =>
+        part.toLowerCase() === term.toLowerCase() ? (
+          <mark key={index} className="highlight">{part}</mark>
+        ) : (
+          part
+        )
+      );
+    } catch {
+      return text;
+    }
+  }, []);
 
   // Get log level class
-  const getLogLevel = (log) => {
+  const getLogLevel = useCallback((log) => {
     const msg = log.message.toLowerCase();
     if (log.stream === 'stderr' || msg.includes('error') || msg.includes('err]')) {
       return 'error';
@@ -90,10 +134,10 @@ function LogViewer({ logs, searchTerm, isStreaming, isLoading }) {
       return 'info';
     }
     return 'default';
-  };
+  }, []);
 
   // Format timestamp
-  const formatTimestamp = (timestamp) => {
+  const formatTimestamp = useCallback((timestamp) => {
     try {
       const date = new Date(timestamp);
       return date.toLocaleTimeString('en-US', {
@@ -106,16 +150,20 @@ function LogViewer({ logs, searchTerm, isStreaming, isLoading }) {
     } catch {
       return timestamp;
     }
-  };
+  }, []);
+
+  // Item data for the list (memoized)
+  const itemData = useMemo(() => ({
+    logs,
+    searchTerm,
+    getLogLevel,
+    formatTimestamp,
+    highlightText
+  }), [logs, searchTerm, getLogLevel, formatTimestamp, highlightText]);
 
   return (
-    <div
-      ref={containerRef}
-      className="log-viewer"
-      onScroll={handleScroll}
-      onWheel={handleWheel}
-    >
-      {isLoading ? (
+    <div ref={containerRef} className="log-viewer">
+      {isLoading && logs.length === 0 ? (
         <div className="no-logs">
           <div className="waiting-icon loading-spinner">⏳</div>
           <p>Loading logs...</p>
@@ -135,23 +183,39 @@ function LogViewer({ logs, searchTerm, isStreaming, isLoading }) {
           )}
         </div>
       ) : (
-        <div className="log-entries">
-          {logs.map((log) => (
-            <div
-              key={log.id}
-              className={`log-entry ${getLogLevel(log)}`}
-            >
-              <span className="log-timestamp">
-                {formatTimestamp(log.timestamp)}
-              </span>
-              <span className={`log-stream ${log.stream}`}>
-                {log.stream === 'stderr' ? 'ERR' : 'OUT'}
-              </span>
-              <span className="log-message">
-                {highlightText(log.message, searchTerm)}
-              </span>
+        <div className="log-entries-container">
+          {/* Loading indicator for pagination */}
+          {isLoading && logs.length > 0 && (
+            <div className="loading-more">
+              Loading more logs...
             </div>
-          ))}
+          )}
+
+          {/* Pagination info */}
+          {pagination && (
+            <div className="pagination-info">
+              Showing {logs.length} of {pagination.totalLogs} logs
+              {pagination.hasMore && (
+                <button className="load-more-btn" onClick={onLoadMore} disabled={isLoading}>
+                  Load more
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Virtual scrolling list */}
+          <List
+            ref={listRef}
+            height={containerHeight - (pagination ? 40 : 0)}
+            itemCount={logs.length}
+            itemSize={ROW_HEIGHT}
+            width="100%"
+            itemData={itemData}
+            onScroll={handleScroll}
+            className="virtual-log-list"
+          >
+            {LogRow}
+          </List>
         </div>
       )}
 

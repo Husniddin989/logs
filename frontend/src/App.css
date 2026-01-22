@@ -312,6 +312,10 @@
   font-style: italic;
 }
 
+.total-logs {
+  color: #6e7681;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }

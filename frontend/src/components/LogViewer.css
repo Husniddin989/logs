@@ -1,16 +1,89 @@
 .log-viewer {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   background-color: #0d1117;
-  padding: 12px 0;
   position: relative;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-.log-entries {
-  padding: 0 16px;
+.log-entries-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', 'Liberation Mono', monospace;
+}
+
+/* Virtual scrolling list */
+.virtual-log-list {
+  padding: 0 16px;
+}
+
+.virtual-log-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.virtual-log-list::-webkit-scrollbar-track {
+  background: #161b22;
+  border-radius: 4px;
+}
+
+.virtual-log-list::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+.virtual-log-list::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* Pagination info bar */
+.pagination-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.load-more-btn {
+  background: #238636;
+  color: #fff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.load-more-btn:hover:not(:disabled) {
+  background: #2ea043;
+}
+
+.load-more-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Loading more indicator */
+.loading-more {
+  padding: 8px 16px;
+  background: #1c2128;
+  text-align: center;
+  font-size: 12px;
+  color: #58a6ff;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 
 /* Log Entry - Base */
@@ -18,14 +91,13 @@
   display: grid;
   grid-template-columns: 100px 50px 1fr;
   gap: 16px;
-  align-items: flex-start;
-  padding: 8px 12px;
-  margin: 2px 0;
+  align-items: center;
+  padding: 0 12px;
   font-size: 13px;
-  line-height: 1.6;
-  border-radius: 6px;
+  line-height: 36px;
   border-left: 3px solid transparent;
-  transition: all 0.15s ease;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .log-entry:hover {
@@ -81,6 +153,7 @@
   font-weight: 500;
   letter-spacing: -0.2px;
   user-select: none;
+  white-space: nowrap;
 }
 
 /* Stream Badge */
@@ -94,6 +167,7 @@
   letter-spacing: 0.5px;
   text-align: center;
   user-select: none;
+  line-height: 1.4;
 }
 
 .log-stream.stdout {
@@ -110,10 +184,10 @@
 .log-message {
   flex: 1;
   color: #e6edf3;
-  word-break: break-word;
-  white-space: pre-wrap;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 13px;
-  line-height: 1.6;
 }
 
 .log-entry.error .log-message {
@@ -176,7 +250,7 @@
 
 /* Scroll to bottom button */
 .scroll-to-bottom {
-  position: sticky;
+  position: absolute;
   bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
@@ -194,8 +268,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 auto;
-  width: fit-content;
 }
 
 .scroll-to-bottom:hover {
@@ -204,31 +276,12 @@
   box-shadow: 0 6px 20px rgba(35, 134, 54, 0.5);
 }
 
-/* Scrollbar styling */
-.log-viewer::-webkit-scrollbar {
-  width: 8px;
-}
-
-.log-viewer::-webkit-scrollbar-track {
-  background: #161b22;
-  border-radius: 4px;
-}
-
-.log-viewer::-webkit-scrollbar-thumb {
-  background: #30363d;
-  border-radius: 4px;
-}
-
-.log-viewer::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
-}
-
 /* Responsive adjustments */
 @media (max-width: 768px) {
   .log-entry {
     grid-template-columns: 80px 40px 1fr;
     gap: 8px;
-    padding: 6px 8px;
+    padding: 0 8px;
     font-size: 12px;
   }
 

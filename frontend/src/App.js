@@ -31,6 +31,7 @@ function App() {
   const [containers, setContainers] = useState([]);
   const [selectedContainer, setSelectedContainer] = useState(null);
   const [logsMap, setLogsMap] = useState({});
+  const [paginationMap, setPaginationMap] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
@@ -67,6 +68,7 @@ function App() {
     setContainers([]);
     setSelectedContainer(null);
     setLogsMap({});
+    setPaginationMap({});
     if (wsRef.current) {
       wsRef.current.close();
     }
@@ -123,12 +125,14 @@ function App() {
     selectedContainerRef.current = selectedContainer;
   }, [selectedContainer]);
 
-  // Fetch logs by time range
-  const fetchLogsByTimeRange = useCallback(async (container, range, customRange = null) => {
+  // Fetch logs by time range with pagination support
+  const fetchLogsByTimeRange = useCallback(async (container, range, customRange = null, page = 1, append = false) => {
     if (!container || range === 'live' || !token) return;
 
     setIsLoading(true);
-    setIsStreaming(false);
+    if (!append) {
+      setIsStreaming(false);
+    }
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ action: 'unsubscribe' }));
@@ -144,6 +148,10 @@ function App() {
         params.append('timeRange', range);
       }
 
+      // Pagination parameters
+      params.append('page', page.toString());
+      params.append('limit', '500');
+
       const response = await fetch(
         `${API_URL}/api/containers/${container.fullId}/logs?${params}`,
         { headers: getAuthHeaders() }
@@ -153,16 +161,53 @@ function App() {
         return;
       }
       const data = await response.json();
-      setLogsMap(prev => ({
-        ...prev,
-        [container.fullId]: data
-      }));
+
+      // Handle paginated response
+      if (data.logs && data.pagination) {
+        setLogsMap(prev => ({
+          ...prev,
+          [container.fullId]: append
+            ? [...(prev[container.fullId] || []), ...data.logs]
+            : data.logs
+        }));
+        setPaginationMap(prev => ({
+          ...prev,
+          [container.fullId]: data.pagination
+        }));
+      } else {
+        // Fallback for non-paginated response (backward compatibility)
+        setLogsMap(prev => ({
+          ...prev,
+          [container.fullId]: Array.isArray(data) ? data : []
+        }));
+        setPaginationMap(prev => ({
+          ...prev,
+          [container.fullId]: null
+        }));
+      }
     } catch (error) {
       console.error('Failed to fetch logs:', error);
     } finally {
       setIsLoading(false);
     }
   }, [token]);
+
+  // Load more logs (pagination)
+  const handleLoadMore = useCallback(() => {
+    if (!selectedContainer || isLoading) return;
+
+    const currentPagination = paginationMap[selectedContainer.fullId];
+    if (!currentPagination || !currentPagination.hasMore) return;
+
+    const nextPage = currentPagination.page + 1;
+    fetchLogsByTimeRange(
+      selectedContainer,
+      timeRange,
+      customDateRange,
+      nextPage,
+      true // append mode
+    );
+  }, [selectedContainer, paginationMap, isLoading, timeRange, customDateRange, fetchLogsByTimeRange]);
 
   // WebSocket connection for live streaming
   useEffect(() => {
@@ -237,6 +282,7 @@ function App() {
   }, [selectedContainer, timeRange, fetchLogsByTimeRange]);
 
   const currentLogs = selectedContainer ? (logsMap[selectedContainer.fullId] || []) : [];
+  const currentPagination = selectedContainer ? paginationMap[selectedContainer.fullId] : null;
 
   const handleSelectContainer = (container) => {
     setSelectedContainer(container);
@@ -253,6 +299,10 @@ function App() {
         ...prev,
         [selectedContainer.fullId]: []
       }));
+      setPaginationMap(prev => ({
+        ...prev,
+        [selectedContainer.fullId]: null
+      }));
     }
   };
 
@@ -263,6 +313,10 @@ function App() {
       setLogsMap(prev => ({
         ...prev,
         [selectedContainer.fullId]: []
+      }));
+      setPaginationMap(prev => ({
+        ...prev,
+        [selectedContainer.fullId]: null
       }));
       fetchLogsByTimeRange(selectedContainer, 'custom', range);
     }
@@ -298,6 +352,7 @@ function App() {
         params.append('tail', '500');
       }
       if (term) params.append('search', term);
+      params.append('limit', '500');
 
       const response = await fetch(
         `${API_URL}/api/containers/${selectedContainer.fullId}/logs?${params}`,
@@ -308,10 +363,23 @@ function App() {
         return;
       }
       const data = await response.json();
-      setLogsMap(prev => ({
-        ...prev,
-        [selectedContainer.fullId]: data
-      }));
+
+      // Handle paginated response
+      if (data.logs && data.pagination) {
+        setLogsMap(prev => ({
+          ...prev,
+          [selectedContainer.fullId]: data.logs
+        }));
+        setPaginationMap(prev => ({
+          ...prev,
+          [selectedContainer.fullId]: data.pagination
+        }));
+      } else {
+        setLogsMap(prev => ({
+          ...prev,
+          [selectedContainer.fullId]: Array.isArray(data) ? data : []
+        }));
+      }
     } catch (error) {
       console.error('Failed to search logs:', error);
     } finally {
@@ -341,6 +409,10 @@ function App() {
       setLogsMap(prev => ({
         ...prev,
         [selectedContainer.fullId]: []
+      }));
+      setPaginationMap(prev => ({
+        ...prev,
+        [selectedContainer.fullId]: null
       }));
     }
   };
@@ -461,10 +533,18 @@ function App() {
                 searchTerm={searchTerm}
                 isStreaming={isStreaming}
                 isLoading={isLoading}
+                pagination={currentPagination}
+                hasMore={currentPagination?.hasMore}
+                onLoadMore={handleLoadMore}
               />
 
               <div className="log-footer">
-                <span>{filteredLogs.length} logs</span>
+                <span>
+                  {filteredLogs.length} logs
+                  {currentPagination && currentPagination.totalLogs > filteredLogs.length && (
+                    <span className="total-logs"> / {currentPagination.totalLogs} total</span>
+                  )}
+                </span>
                 {isStreaming && <span className="streaming-indicator">● Live</span>}
                 {isLoading && <span className="loading-indicator">Loading...</span>}
                 {timeRange !== 'live' && !isLoading && (
