@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ContainerList from './components/ContainerList';
 import LogViewer from './components/LogViewer';
-import SearchBar from './components/SearchBar';
+import LogFilters from './components/LogFilters';
+import Login from './components/Login';
+import UserManagement from './components/UserManagement';
 import './App.css';
 
 const API_URL = process.env.REACT_APP_API_URL || '';
@@ -10,49 +12,111 @@ const getWsUrl = () => {
   return `${protocol}//${window.location.host}/ws`;
 };
 
+// Auth helper
+const getAuthHeaders = () => {
+  const token = localStorage.getItem('token');
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': token ? `Bearer ${token}` : ''
+  };
+};
+
 function App() {
+  // Auth state
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(null);
+  const [showUserManagement, setShowUserManagement] = useState(false);
+
+  // App state
   const [containers, setContainers] = useState([]);
   const [selectedContainer, setSelectedContainer] = useState(null);
-  const [logsMap, setLogsMap] = useState({}); // Container ID bo'yicha loglar saqlash
+  const [logsMap, setLogsMap] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [dockerInfo, setDockerInfo] = useState(null);
   const [levelFilter, setLevelFilter] = useState('all');
-  const [timeRange, setTimeRange] = useState('live'); // live, 5m, 15m, 1h, 6h, 24h, 3d, 5d
+  const [timeRange, setTimeRange] = useState('live');
+  const [customDateRange, setCustomDateRange] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const wsRef = useRef(null);
   const selectedContainerRef = useRef(null);
 
+  // Check for existing session on mount
+  useEffect(() => {
+    const savedToken = localStorage.getItem('token');
+    const savedUser = localStorage.getItem('user');
+    if (savedToken && savedUser) {
+      setToken(savedToken);
+      setUser(JSON.parse(savedUser));
+    }
+  }, []);
+
+  // Handle login
+  const handleLogin = (userData, userToken) => {
+    setUser(userData);
+    setToken(userToken);
+  };
+
+  // Handle logout
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setUser(null);
+    setToken(null);
+    setContainers([]);
+    setSelectedContainer(null);
+    setLogsMap({});
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+  };
+
   // Fetch containers
   const fetchContainers = useCallback(async () => {
+    if (!token) return;
     try {
-      const response = await fetch(`${API_URL}/api/containers`);
+      const response = await fetch(`${API_URL}/api/containers`, {
+        headers: getAuthHeaders()
+      });
+      if (response.status === 401) {
+        handleLogout();
+        return;
+      }
       const data = await response.json();
       setContainers(data);
     } catch (error) {
       console.error('Failed to fetch containers:', error);
     }
-  }, []);
+  }, [token]);
 
   // Fetch Docker info
   const fetchDockerInfo = useCallback(async () => {
+    if (!token) return;
     try {
-      const response = await fetch(`${API_URL}/api/docker/info`);
+      const response = await fetch(`${API_URL}/api/docker/info`, {
+        headers: getAuthHeaders()
+      });
+      if (response.status === 401) {
+        handleLogout();
+        return;
+      }
       const data = await response.json();
       setDockerInfo(data);
     } catch (error) {
       console.error('Failed to fetch Docker info:', error);
     }
-  }, []);
+  }, [token]);
 
   // Initial data fetch
   useEffect(() => {
-    fetchContainers();
-    fetchDockerInfo();
-    const interval = setInterval(fetchContainers, 10000);
-    return () => clearInterval(interval);
-  }, [fetchContainers, fetchDockerInfo]);
+    if (token) {
+      fetchContainers();
+      fetchDockerInfo();
+      const interval = setInterval(fetchContainers, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [token, fetchContainers, fetchDockerInfo]);
 
   // Update ref when selectedContainer changes
   useEffect(() => {
@@ -60,21 +124,34 @@ function App() {
   }, [selectedContainer]);
 
   // Fetch logs by time range
-  const fetchLogsByTimeRange = useCallback(async (container, range) => {
-    if (!container || range === 'live') return;
+  const fetchLogsByTimeRange = useCallback(async (container, range, customRange = null) => {
+    if (!container || range === 'live' || !token) return;
 
     setIsLoading(true);
     setIsStreaming(false);
 
-    // WebSocket streaming to'xtatish
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ action: 'unsubscribe' }));
     }
 
     try {
+      const params = new URLSearchParams();
+
+      if (customRange) {
+        params.append('since', customRange.from.toISOString());
+        params.append('until', customRange.to.toISOString());
+      } else {
+        params.append('timeRange', range);
+      }
+
       const response = await fetch(
-        `${API_URL}/api/containers/${container.fullId}/logs?timeRange=${range}`
+        `${API_URL}/api/containers/${container.fullId}/logs?${params}`,
+        { headers: getAuthHeaders() }
       );
+      if (response.status === 401) {
+        handleLogout();
+        return;
+      }
       const data = await response.json();
       setLogsMap(prev => ({
         ...prev,
@@ -85,27 +162,40 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [token]);
 
   // WebSocket connection for live streaming
   useEffect(() => {
-    if (!selectedContainer || timeRange !== 'live') return;
+    if (!selectedContainer || timeRange !== 'live' || !token) return;
 
     const ws = new WebSocket(getWsUrl());
     wsRef.current = ws;
 
     ws.onopen = () => {
-      setIsConnected(true);
-      ws.send(JSON.stringify({
-        action: 'subscribe',
-        containerId: selectedContainer.fullId,
-        filter: searchTerm
-      }));
-      setIsStreaming(true);
+      // First authenticate
+      ws.send(JSON.stringify({ action: 'auth', token }));
     };
 
     ws.onmessage = (event) => {
       const message = JSON.parse(event.data);
+
+      if (message.type === 'auth') {
+        if (message.status === 'success') {
+          setIsConnected(true);
+          // Now subscribe to container
+          ws.send(JSON.stringify({
+            action: 'subscribe',
+            containerId: selectedContainer.fullId,
+            filter: searchTerm
+          }));
+          setIsStreaming(true);
+        } else {
+          console.error('WebSocket auth failed:', message.message);
+          handleLogout();
+        }
+        return;
+      }
+
       if (message.type === 'log') {
         const currentContainer = selectedContainerRef.current;
         if (currentContainer) {
@@ -137,7 +227,7 @@ function App() {
       }
       ws.close();
     };
-  }, [selectedContainer, timeRange]);
+  }, [selectedContainer, timeRange, token, searchTerm]);
 
   // Time range o'zgarganda loglarni yuklash
   useEffect(() => {
@@ -146,22 +236,19 @@ function App() {
     }
   }, [selectedContainer, timeRange, fetchLogsByTimeRange]);
 
-  // Hozirgi container uchun loglarni olish
   const currentLogs = selectedContainer ? (logsMap[selectedContainer.fullId] || []) : [];
 
-  // Handle container selection
   const handleSelectContainer = (container) => {
     setSelectedContainer(container);
     setSearchTerm('');
     setLevelFilter('all');
-    setTimeRange('live'); // Yangi container tanlanganda live rejimga qaytish
+    setTimeRange('live');
   };
 
-  // Handle time range change
   const handleTimeRangeChange = (range) => {
     setTimeRange(range);
+    setCustomDateRange(null);
     if (selectedContainer) {
-      // Eski loglarni tozalash
       setLogsMap(prev => ({
         ...prev,
         [selectedContainer.fullId]: []
@@ -169,10 +256,24 @@ function App() {
     }
   };
 
-  // Handle search
-  const handleSearch = async (term) => {
+  const handleCustomDateRangeChange = (range) => {
+    setCustomDateRange(range);
+    setTimeRange('custom');
+    if (selectedContainer) {
+      setLogsMap(prev => ({
+        ...prev,
+        [selectedContainer.fullId]: []
+      }));
+      fetchLogsByTimeRange(selectedContainer, 'custom', range);
+    }
+  };
+
+  const handleSearch = async (term, doSearch = true) => {
     setSearchTerm(term);
-    if (!selectedContainer) return;
+    if (!selectedContainer || !token) return;
+
+    // If not doing search (just updating input), return
+    if (!doSearch) return;
 
     if (!term && timeRange === 'live') {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -185,11 +286,13 @@ function App() {
       return;
     }
 
-    // Search with current time range
     setIsLoading(true);
     try {
       const params = new URLSearchParams();
-      if (timeRange !== 'live') {
+      if (timeRange === 'custom' && customDateRange) {
+        params.append('since', customDateRange.from.toISOString());
+        params.append('until', customDateRange.to.toISOString());
+      } else if (timeRange !== 'live') {
         params.append('timeRange', timeRange);
       } else {
         params.append('tail', '500');
@@ -197,8 +300,13 @@ function App() {
       if (term) params.append('search', term);
 
       const response = await fetch(
-        `${API_URL}/api/containers/${selectedContainer.fullId}/logs?${params}`
+        `${API_URL}/api/containers/${selectedContainer.fullId}/logs?${params}`,
+        { headers: getAuthHeaders() }
       );
+      if (response.status === 401) {
+        handleLogout();
+        return;
+      }
       const data = await response.json();
       setLogsMap(prev => ({
         ...prev,
@@ -211,7 +319,6 @@ function App() {
     }
   };
 
-  // Filter logs by level
   const filteredLogs = currentLogs.filter(log => {
     if (levelFilter === 'all') return true;
     if (levelFilter === 'error') {
@@ -229,7 +336,6 @@ function App() {
     return true;
   });
 
-  // Clear logs for current container
   const handleClearLogs = () => {
     if (selectedContainer) {
       setLogsMap(prev => ({
@@ -239,10 +345,8 @@ function App() {
     }
   };
 
-  // Pause/Resume streaming (only for live mode)
   const handleToggleStream = () => {
     if (timeRange !== 'live') {
-      // Switch to live mode
       setTimeRange('live');
       return;
     }
@@ -259,6 +363,21 @@ function App() {
       setIsStreaming(true);
     }
   };
+
+  // Show login if not authenticated
+  if (!user) {
+    return <Login onLogin={handleLogin} />;
+  }
+
+  // Show user management panel
+  if (showUserManagement) {
+    return (
+      <UserManagement
+        onBack={() => setShowUserManagement(false)}
+        currentUser={user}
+      />
+    );
+  }
 
   return (
     <div className="app">
@@ -281,6 +400,17 @@ function App() {
           <span className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
             {isConnected ? 'Connected' : 'Disconnected'}
           </span>
+          <div className="user-menu">
+            <span className="user-info">{user.username}</span>
+            {user.role === 'admin' && (
+              <button className="admin-btn" onClick={() => setShowUserManagement(true)}>
+                Users
+              </button>
+            )}
+            <button className="logout-btn" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
         </div>
       </header>
 
@@ -310,50 +440,20 @@ function App() {
                   </span>
                 </div>
 
-                <SearchBar
-                  value={searchTerm}
-                  onChange={handleSearch}
-                  placeholder="Search logs..."
+                <LogFilters
+                  searchTerm={searchTerm}
+                  onSearchChange={handleSearch}
+                  timeRange={timeRange}
+                  onTimeRangeChange={handleTimeRangeChange}
+                  levelFilter={levelFilter}
+                  onLevelFilterChange={setLevelFilter}
+                  customDateRange={customDateRange}
+                  onCustomDateRangeChange={handleCustomDateRangeChange}
+                  isStreaming={isStreaming}
+                  onToggleStream={handleToggleStream}
+                  onClearLogs={handleClearLogs}
+                  isLoading={isLoading}
                 />
-
-                <div className="log-controls">
-                  <select
-                    className="time-filter"
-                    value={timeRange}
-                    onChange={(e) => handleTimeRangeChange(e.target.value)}
-                  >
-                    <option value="live">Live</option>
-                    <option value="5m">Last 5 min</option>
-                    <option value="15m">Last 15 min</option>
-                    <option value="1h">Last 1 hour</option>
-                    <option value="6h">Last 6 hours</option>
-                    <option value="24h">Last 24 hours</option>
-                    <option value="3d">Last 3 days</option>
-                    <option value="5d">Last 5 days</option>
-                  </select>
-
-                  <select
-                    className="level-filter"
-                    value={levelFilter}
-                    onChange={(e) => setLevelFilter(e.target.value)}
-                  >
-                    <option value="all">All Levels</option>
-                    <option value="error">Errors</option>
-                    <option value="warn">Warnings</option>
-                    <option value="info">Info</option>
-                  </select>
-
-                  <button
-                    className={`stream-btn ${isStreaming ? 'streaming' : ''}`}
-                    onClick={handleToggleStream}
-                  >
-                    {timeRange !== 'live' ? '▶ Go Live' : (isStreaming ? '⏸ Pause' : '▶ Stream')}
-                  </button>
-
-                  <button className="clear-btn" onClick={handleClearLogs}>
-                    Clear
-                  </button>
-                </div>
               </div>
 
               <LogViewer

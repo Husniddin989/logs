@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend:
     build: ./backend
@@ -9,8 +7,10 @@ services:
       - "2001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - users-data:/app/src/data
     environment:
       - NODE_ENV=production
+      - JWT_SECRET=${JWT_SECRET:-docker-log-viewer-secret-change-me}
     networks:
       - log-viewer-network
 
@@ -24,6 +24,9 @@ services:
       - backend
     networks:
       - log-viewer-network
+
+volumes:
+  users-data:
 
 networks:
   log-viewer-network:

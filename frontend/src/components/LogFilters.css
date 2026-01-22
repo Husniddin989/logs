@@ -1,0 +1,283 @@
+.log-filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+}
+
+/* Search */
+.search-group {
+  flex: 1;
+  min-width: 200px;
+  max-width: 400px;
+}
+
+.search-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.search-icon {
+  position: absolute;
+  left: 12px;
+  font-size: 14px;
+  opacity: 0.6;
+}
+
+.search-input {
+  width: 100%;
+  background-color: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 8px 36px;
+  color: #c9d1d9;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+}
+
+.search-input::placeholder {
+  color: #6e7681;
+}
+
+.clear-search-btn {
+  position: absolute;
+  right: 8px;
+  background: none;
+  border: none;
+  color: #6e7681;
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.clear-search-btn:hover {
+  background-color: #30363d;
+  color: #c9d1d9;
+}
+
+/* Selects */
+.filter-select {
+  background-color: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #c9d1d9;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-width: 130px;
+}
+
+.filter-select:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+
+.filter-select:hover {
+  border-color: #484f58;
+}
+
+.time-select {
+  min-width: 150px;
+}
+
+.level-select {
+  min-width: 120px;
+}
+
+/* Custom Date Modal */
+.custom-date-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.custom-date-modal {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  padding: 24px;
+  min-width: 360px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.custom-date-modal h3 {
+  margin: 0 0 20px 0;
+  color: #c9d1d9;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.date-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.date-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.date-field label {
+  color: #8b949e;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.date-field input {
+  background-color: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: #c9d1d9;
+  font-size: 14px;
+}
+
+.date-field input:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+
+.date-field input[type="date"],
+.date-field input[type="time"] {
+  cursor: pointer;
+}
+
+.date-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.date-actions button {
+  flex: 1;
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.date-actions .cancel-btn {
+  background: transparent;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+}
+
+.date-actions .cancel-btn:hover {
+  border-color: #484f58;
+  background: #21262d;
+}
+
+.date-actions .apply-btn {
+  background: #238636;
+  border: none;
+  color: #fff;
+}
+
+.date-actions .apply-btn:hover:not(:disabled) {
+  background: #2ea043;
+}
+
+.date-actions .apply-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Action Buttons */
+.filter-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.action-btn {
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid #30363d;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.stream-btn {
+  background-color: #238636;
+  border-color: #238636;
+  color: #fff;
+}
+
+.stream-btn:hover:not(:disabled) {
+  background-color: #2ea043;
+}
+
+.stream-btn.streaming {
+  background-color: #d29922;
+  border-color: #d29922;
+}
+
+.stream-btn.streaming:hover:not(:disabled) {
+  background-color: #e3a62e;
+}
+
+.clear-btn {
+  background-color: #21262d;
+  color: #c9d1d9;
+}
+
+.clear-btn:hover {
+  background-color: #30363d;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .log-filters {
+    gap: 8px;
+  }
+
+  .search-group {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .filter-actions {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-end;
+  }
+}

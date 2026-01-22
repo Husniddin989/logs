@@ -1,0 +1,11 @@
+{
+  "users": [
+    {
+      "id": "1",
+      "username": "admin",
+      "password": "$2a$10$WVBqr3Xr4eD6QB98WkbOHe2t/NGt0VRtCX40hozOLskWx.coLe5Jq",
+      "role": "admin",
+      "allowedContainers": ["*"]
+    }
+  ]
+}

@@ -63,6 +63,54 @@
   color: #f85149;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.user-info {
+  color: #c9d1d9;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.admin-btn,
+.logout-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid #30363d;
+}
+
+.admin-btn {
+  background-color: rgba(88, 166, 255, 0.1);
+  border-color: rgba(88, 166, 255, 0.3);
+  color: #58a6ff;
+}
+
+.admin-btn:hover {
+  background-color: rgba(88, 166, 255, 0.2);
+}
+
+.logout-btn {
+  background-color: rgba(248, 81, 73, 0.1);
+  border-color: rgba(248, 81, 73, 0.3);
+  color: #f85149;
+}
+
+.logout-btn:hover {
+  background-color: rgba(248, 81, 73, 0.2);
+}
+
 /* Main Content */
 .main-content {
   display: flex;
@@ -71,16 +119,17 @@
   height: calc(100vh - 53px); /* Header height olib tashlash */
 }
 
-/* Sidebar - fixed, scroll yo'q */
+/* Sidebar - wider for stats */
 .sidebar {
-  width: 280px;
-  min-width: 280px;
-  max-width: 280px;
+  width: 320px;
+  min-width: 320px;
+  max-width: 320px;
   background-color: #161b22;
   border-right: 1px solid #30363d;
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -126,12 +175,11 @@
 
 .log-header {
   display: flex;
-  align-items: center;
-  gap: 16px;
+  flex-direction: column;
+  gap: 12px;
   padding: 12px 16px;
   background-color: #161b22;
   border-bottom: 1px solid #30363d;
-  flex-wrap: wrap;
   flex-shrink: 0;
 }
 
