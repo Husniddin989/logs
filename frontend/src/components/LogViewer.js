@@ -1,16 +1,12 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { FixedSizeList as List } from 'react-window';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import './LogViewer.css';
 
-// Memoized log row component for better performance
-const LogRow = React.memo(({ data, index, style }) => {
-  const { logs, searchTerm, getLogLevel, formatTimestamp, highlightText } = data;
-  const log = logs[index];
-
+// Memoized log row component
+const LogRow = React.memo(({ log, searchTerm, getLogLevel, formatTimestamp, highlightText }) => {
   if (!log) return null;
 
   return (
-    <div style={style} className={`log-entry ${getLogLevel(log)}`}>
+    <div className={`log-entry ${getLogLevel(log)}`}>
       <span className="log-timestamp">
         {formatTimestamp(log.timestamp)}
       </span>
@@ -25,45 +21,14 @@ const LogRow = React.memo(({ data, index, style }) => {
 });
 
 function LogViewer({ logs, searchTerm, isStreaming, isLoading, onLoadMore, hasMore, pagination }) {
-  const listRef = useRef(null);
   const containerRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const lastLogCount = useRef(0);
-  const [containerHeight, setContainerHeight] = useState(500);
-
-  // Row height
-  const ROW_HEIGHT = 36;
-
-  // Update container height on resize
-  useEffect(() => {
-    const updateHeight = () => {
-      if (containerRef.current) {
-        const height = containerRef.current.clientHeight;
-        if (height > 0) {
-          setContainerHeight(height);
-        }
-      }
-    };
-
-    updateHeight();
-    window.addEventListener('resize', updateHeight);
-
-    // Use ResizeObserver for more accurate tracking
-    const resizeObserver = new ResizeObserver(updateHeight);
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
-    }
-
-    return () => {
-      window.removeEventListener('resize', updateHeight);
-      resizeObserver.disconnect();
-    };
-  }, []);
 
   // Auto-scroll to bottom when new logs arrive
   useEffect(() => {
-    if (listRef.current && autoScroll && logs.length > lastLogCount.current && logs.length > 0) {
-      listRef.current.scrollToItem(logs.length - 1, 'end');
+    if (containerRef.current && autoScroll && logs.length > lastLogCount.current && logs.length > 0) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
     lastLogCount.current = logs.length;
   }, [logs.length, autoScroll]);
@@ -75,27 +40,25 @@ function LogViewer({ logs, searchTerm, isStreaming, isLoading, onLoadMore, hasMo
     }
   }, [logs.length]);
 
-  // Handle scroll events for auto-scroll detection and infinite loading
-  const handleScroll = useCallback(({ scrollOffset, scrollUpdateWasRequested }) => {
-    if (scrollUpdateWasRequested) return;
-
-    const totalHeight = logs.length * ROW_HEIGHT;
-    const isAtBottom = totalHeight - scrollOffset - containerHeight < 100;
-    const isAtTop = scrollOffset < 100;
+  // Handle scroll events
+  const handleScroll = useCallback((e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.target;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 100;
+    const isAtTop = scrollTop < 100;
 
     setAutoScroll(isAtBottom);
 
-    // Load more when scrolling to top (for older logs)
+    // Load more when scrolling to top
     if (isAtTop && hasMore && onLoadMore && !isLoading) {
       onLoadMore();
     }
-  }, [logs.length, containerHeight, hasMore, onLoadMore, isLoading]);
+  }, [hasMore, onLoadMore, isLoading]);
 
   // Scroll to bottom manually
   const scrollToBottom = useCallback(() => {
-    if (listRef.current && logs.length > 0) {
+    if (containerRef.current && logs.length > 0) {
       setAutoScroll(true);
-      listRef.current.scrollToItem(logs.length - 1, 'end');
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
   }, [logs.length]);
 
@@ -152,17 +115,8 @@ function LogViewer({ logs, searchTerm, isStreaming, isLoading, onLoadMore, hasMo
     }
   }, []);
 
-  // Item data for the list (memoized)
-  const itemData = useMemo(() => ({
-    logs,
-    searchTerm,
-    getLogLevel,
-    formatTimestamp,
-    highlightText
-  }), [logs, searchTerm, getLogLevel, formatTimestamp, highlightText]);
-
   return (
-    <div ref={containerRef} className="log-viewer">
+    <div className="log-viewer">
       {isLoading && logs.length === 0 ? (
         <div className="no-logs">
           <div className="waiting-icon loading-spinner">⏳</div>
@@ -184,6 +138,18 @@ function LogViewer({ logs, searchTerm, isStreaming, isLoading, onLoadMore, hasMo
         </div>
       ) : (
         <div className="log-entries-container">
+          {/* Pagination info */}
+          {pagination && (
+            <div className="pagination-info">
+              <span>Showing {logs.length} of {pagination.totalLogs} logs</span>
+              {pagination.hasMore && (
+                <button className="load-more-btn" onClick={onLoadMore} disabled={isLoading}>
+                  {isLoading ? 'Loading...' : 'Load more'}
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Loading indicator for pagination */}
           {isLoading && logs.length > 0 && (
             <div className="loading-more">
@@ -191,31 +157,23 @@ function LogViewer({ logs, searchTerm, isStreaming, isLoading, onLoadMore, hasMo
             </div>
           )}
 
-          {/* Pagination info */}
-          {pagination && (
-            <div className="pagination-info">
-              Showing {logs.length} of {pagination.totalLogs} logs
-              {pagination.hasMore && (
-                <button className="load-more-btn" onClick={onLoadMore} disabled={isLoading}>
-                  Load more
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* Virtual scrolling list */}
-          <List
-            ref={listRef}
-            height={containerHeight - (pagination ? 40 : 0)}
-            itemCount={logs.length}
-            itemSize={ROW_HEIGHT}
-            width="100%"
-            itemData={itemData}
+          {/* Scrollable log list */}
+          <div
+            ref={containerRef}
+            className="log-scroll-container"
             onScroll={handleScroll}
-            className="virtual-log-list"
           >
-            {LogRow}
-          </List>
+            {logs.map((log, index) => (
+              <LogRow
+                key={`${log.timestamp}-${index}`}
+                log={log}
+                searchTerm={searchTerm}
+                getLogLevel={getLogLevel}
+                formatTimestamp={formatTimestamp}
+                highlightText={highlightText}
+              />
+            ))}
+          </div>
         </div>
       )}
 

@@ -16,6 +16,32 @@
   font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', 'Liberation Mono', monospace;
 }
 
+/* Scrollable log container */
+.log-scroll-container {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 16px;
+}
+
+.log-scroll-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.log-scroll-container::-webkit-scrollbar-track {
+  background: #161b22;
+  border-radius: 4px;
+}
+
+.log-scroll-container::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+.log-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
 /* Virtual scrolling list */
 .virtual-log-list {
   padding: 0 16px;
@@ -91,13 +117,14 @@
   display: grid;
   grid-template-columns: 100px 50px 1fr;
   gap: 16px;
-  align-items: center;
-  padding: 0 12px;
+  align-items: start;
+  padding: 8px 12px;
   font-size: 13px;
-  line-height: 36px;
+  line-height: 1.5;
   border-left: 3px solid transparent;
   box-sizing: border-box;
-  overflow: hidden;
+  border-bottom: 1px solid #21262d;
+  min-height: 36px;
 }
 
 .log-entry:hover {
@@ -184,10 +211,10 @@
 .log-message {
   flex: 1;
   color: #e6edf3;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  word-break: break-all;
   font-size: 13px;
+  line-height: 1.5;
 }
 
 .log-entry.error .log-message {
