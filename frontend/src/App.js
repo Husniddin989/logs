@@ -33,6 +33,7 @@ function App() {
   const [logsMap, setLogsMap] = useState({});
   const [paginationMap, setPaginationMap] = useState({});
   const [searchTerm, setSearchTerm] = useState('');
+  const [containerSearchTerm, setContainerSearchTerm] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [dockerInfo, setDockerInfo] = useState(null);
@@ -494,10 +495,29 @@ function App() {
               ↻
             </button>
           </div>
+          <div className="container-search">
+            <input
+              type="text"
+              className="container-search-input"
+              placeholder="Search containers..."
+              value={containerSearchTerm}
+              onChange={(e) => setContainerSearchTerm(e.target.value)}
+            />
+            {containerSearchTerm && (
+              <button
+                className="search-clear-btn"
+                onClick={() => setContainerSearchTerm('')}
+                title="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
           <ContainerList
             containers={containers}
             selectedContainer={selectedContainer}
             onSelect={handleSelectContainer}
+            searchTerm={containerSearchTerm}
           />
         </aside>
 

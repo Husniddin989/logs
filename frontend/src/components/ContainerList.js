@@ -27,9 +27,21 @@ function formatUptime(createdDate) {
   return `${seconds}s`;
 }
 
-function ContainerList({ containers, selectedContainer, onSelect }) {
-  const runningContainers = containers.filter(c => c.state === 'running');
-  const stoppedContainers = containers.filter(c => c.state !== 'running');
+function ContainerList({ containers, selectedContainer, onSelect, searchTerm = '' }) {
+  // Filter containers by search term
+  const filteredContainers = containers.filter(container => {
+    if (!searchTerm) return true;
+
+    const search = searchTerm.toLowerCase();
+    return (
+      container.name.toLowerCase().includes(search) ||
+      container.image.toLowerCase().includes(search) ||
+      container.id.toLowerCase().includes(search)
+    );
+  });
+
+  const runningContainers = filteredContainers.filter(c => c.state === 'running');
+  const stoppedContainers = filteredContainers.filter(c => c.state !== 'running');
 
   const renderContainer = (container) => {
     const isSelected = selectedContainer?.id === container.id;
@@ -132,6 +144,13 @@ function ContainerList({ containers, selectedContainer, onSelect }) {
         <div className="no-containers">
           <p>No containers found</p>
           <p className="hint">Make sure Docker is running</p>
+        </div>
+      )}
+
+      {containers.length > 0 && filteredContainers.length === 0 && (
+        <div className="no-containers">
+          <p>No matching containers</p>
+          <p className="hint">Try a different search term</p>
         </div>
       )}
     </div>
