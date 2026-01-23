@@ -112,6 +112,134 @@
   50% { opacity: 1; }
 }
 
+/* Log Grouping */
+.log-level-group {
+  margin-bottom: 16px;
+}
+
+.log-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: #161b22;
+  border-left: 4px solid;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+}
+
+.log-group-header:hover {
+  background: #1c2128;
+}
+
+.log-group-header.error {
+  border-left-color: #f85149;
+  color: #ffa198;
+}
+
+.log-group-header.warn {
+  border-left-color: #d29922;
+  color: #f0c14b;
+}
+
+.log-group-header.info {
+  border-left-color: #58a6ff;
+  color: #79c0ff;
+}
+
+.log-group-header.debug {
+  border-left-color: #6e7681;
+  color: #8b949e;
+}
+
+.log-group-header.default {
+  border-left-color: #30363d;
+  color: #c9d1d9;
+}
+
+.group-toggle {
+  font-size: 10px;
+  color: #8b949e;
+  transition: transform 0.2s ease;
+  width: 12px;
+  display: inline-block;
+}
+
+.group-icon {
+  font-size: 14px;
+}
+
+.group-title {
+  flex: 1;
+}
+
+.group-count {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* Time Group Headers */
+.time-groups-container {
+  padding-left: 16px;
+}
+
+.time-group {
+  margin-bottom: 12px;
+}
+
+.time-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #0d1117;
+  border-left: 2px solid #30363d;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  font-size: 12px;
+  border-radius: 4px;
+  margin-bottom: 6px;
+}
+
+.time-group-header:hover {
+  background: #161b22;
+  border-left-color: #484f58;
+}
+
+.time-toggle {
+  font-size: 9px;
+  color: #6e7681;
+  width: 10px;
+  display: inline-block;
+}
+
+.time-range {
+  flex: 1;
+  color: #8b949e;
+  font-weight: 500;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+}
+
+.time-count {
+  font-size: 11px;
+  color: #6e7681;
+  background: #21262d;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.time-group-logs {
+  padding-left: 12px;
+}
+
 /* Log Entry - Base */
 .log-entry {
   display: grid;
@@ -305,10 +433,30 @@
 
 /* Responsive adjustments */
 @media (max-width: 768px) {
+  .log-group-header {
+    padding: 10px 12px;
+    font-size: 12px;
+    gap: 8px;
+  }
+
+  .time-groups-container {
+    padding-left: 8px;
+  }
+
+  .time-group-header {
+    padding: 6px 10px;
+    font-size: 11px;
+    gap: 8px;
+  }
+
+  .time-group-logs {
+    padding-left: 8px;
+  }
+
   .log-entry {
     grid-template-columns: 80px 40px 1fr;
     gap: 8px;
-    padding: 0 8px;
+    padding: 6px 10px;
     font-size: 12px;
   }
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import './LogViewer.css';
 
 // Memoized log row component
@@ -20,10 +20,49 @@ const LogRow = React.memo(({ log, searchTerm, getLogLevel, formatTimestamp, high
   );
 });
 
+// Group header component
+const GroupHeader = React.memo(({ level, count, icon, isExpanded, onToggle }) => {
+  const levelNames = {
+    error: 'ERRORS',
+    warn: 'WARNINGS',
+    info: 'INFO',
+    debug: 'DEBUG',
+    default: 'OTHER'
+  };
+
+  return (
+    <div className={`log-group-header ${level}`} onClick={onToggle}>
+      <span className="group-toggle">{isExpanded ? '▼' : '▶'}</span>
+      <span className="group-icon">{icon}</span>
+      <span className="group-title">{levelNames[level]}</span>
+      <span className="group-count">({count})</span>
+    </div>
+  );
+});
+
+// Time group header component
+const TimeGroupHeader = React.memo(({ timeRange, count, isExpanded, onToggle }) => {
+  return (
+    <div className="time-group-header" onClick={onToggle}>
+      <span className="time-toggle">{isExpanded ? '▼' : '▶'}</span>
+      <span className="time-range">{timeRange}</span>
+      <span className="time-count">{count} logs</span>
+    </div>
+  );
+});
+
 function LogViewer({ logs, searchTerm, isStreaming, isLoading, onLoadMore, hasMore, pagination }) {
   const containerRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const lastLogCount = useRef(0);
+  const [expandedLevels, setExpandedLevels] = useState({
+    error: true,
+    warn: true,
+    info: true,
+    debug: true,
+    default: true
+  });
+  const [expandedTimeGroups, setExpandedTimeGroups] = useState({});
 
   // Auto-scroll to bottom when new logs arrive
   useEffect(() => {
@@ -115,6 +154,93 @@ function LogViewer({ logs, searchTerm, isStreaming, isLoading, onLoadMore, hasMo
     }
   }, []);
 
+  // Group logs by level and time
+  const groupedLogs = useMemo(() => {
+    const groups = {
+      error: [],
+      warn: [],
+      info: [],
+      debug: [],
+      default: []
+    };
+
+    // First, group by level
+    logs.forEach(log => {
+      const level = getLogLevel(log);
+      groups[level].push(log);
+    });
+
+    // Then, group each level by time intervals (5 minutes)
+    const result = {};
+    Object.keys(groups).forEach(level => {
+      if (groups[level].length === 0) return;
+
+      const timeGroups = {};
+      groups[level].forEach(log => {
+        try {
+          const date = new Date(log.timestamp);
+          // Round down to nearest 5 minutes
+          const minutes = Math.floor(date.getMinutes() / 5) * 5;
+          date.setMinutes(minutes, 0, 0);
+          const timeKey = date.toISOString();
+
+          if (!timeGroups[timeKey]) {
+            timeGroups[timeKey] = [];
+          }
+          timeGroups[timeKey].push(log);
+        } catch {
+          // If timestamp parsing fails, use a default group
+          if (!timeGroups['unknown']) {
+            timeGroups['unknown'] = [];
+          }
+          timeGroups['unknown'].push(log);
+        }
+      });
+
+      result[level] = timeGroups;
+    });
+
+    return result;
+  }, [logs, getLogLevel]);
+
+  // Toggle level group
+  const toggleLevelGroup = useCallback((level) => {
+    setExpandedLevels(prev => ({
+      ...prev,
+      [level]: !prev[level]
+    }));
+  }, []);
+
+  // Toggle time group
+  const toggleTimeGroup = useCallback((groupKey) => {
+    setExpandedTimeGroups(prev => ({
+      ...prev,
+      [groupKey]: !prev[groupKey]
+    }));
+  }, []);
+
+  // Format time range for display
+  const formatTimeRange = useCallback((timeKey) => {
+    if (timeKey === 'unknown') return 'Unknown Time';
+
+    try {
+      const startDate = new Date(timeKey);
+      const endDate = new Date(startDate.getTime() + 5 * 60 * 1000); // +5 minutes
+
+      const formatTime = (date) => {
+        return date.toLocaleTimeString('en-US', {
+          hour12: false,
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+      };
+
+      return `${formatTime(startDate)} - ${formatTime(endDate)}`;
+    } catch {
+      return timeKey;
+    }
+  }, []);
+
   return (
     <div className="log-viewer">
       {isLoading && logs.length === 0 ? (
@@ -157,22 +283,79 @@ function LogViewer({ logs, searchTerm, isStreaming, isLoading, onLoadMore, hasMo
             </div>
           )}
 
-          {/* Scrollable log list */}
+          {/* Scrollable log list with grouping */}
           <div
             ref={containerRef}
             className="log-scroll-container"
             onScroll={handleScroll}
           >
-            {logs.map((log, index) => (
-              <LogRow
-                key={`${log.timestamp}-${index}`}
-                log={log}
-                searchTerm={searchTerm}
-                getLogLevel={getLogLevel}
-                formatTimestamp={formatTimestamp}
-                highlightText={highlightText}
-              />
-            ))}
+            {Object.keys(groupedLogs).map(level => {
+              const timeGroups = groupedLogs[level];
+              const totalCount = Object.values(timeGroups).reduce((sum, logs) => sum + logs.length, 0);
+
+              if (totalCount === 0) return null;
+
+              const levelIcons = {
+                error: '🔴',
+                warn: '🟡',
+                info: '🔵',
+                debug: '⚪',
+                default: '⚫'
+              };
+
+              return (
+                <div key={level} className="log-level-group">
+                  <GroupHeader
+                    level={level}
+                    count={totalCount}
+                    icon={levelIcons[level]}
+                    isExpanded={expandedLevels[level]}
+                    onToggle={() => toggleLevelGroup(level)}
+                  />
+
+                  {expandedLevels[level] && (
+                    <div className="time-groups-container">
+                      {Object.keys(timeGroups).sort((a, b) => {
+                        // Sort time groups chronologically
+                        if (a === 'unknown') return 1;
+                        if (b === 'unknown') return -1;
+                        return new Date(a) - new Date(b);
+                      }).map(timeKey => {
+                        const logsInGroup = timeGroups[timeKey];
+                        const groupKey = `${level}-${timeKey}`;
+                        const isTimeExpanded = expandedTimeGroups[groupKey] !== false; // Default expanded
+
+                        return (
+                          <div key={groupKey} className="time-group">
+                            <TimeGroupHeader
+                              timeRange={formatTimeRange(timeKey)}
+                              count={logsInGroup.length}
+                              isExpanded={isTimeExpanded}
+                              onToggle={() => toggleTimeGroup(groupKey)}
+                            />
+
+                            {isTimeExpanded && (
+                              <div className="time-group-logs">
+                                {logsInGroup.map((log, index) => (
+                                  <LogRow
+                                    key={`${log.timestamp}-${index}`}
+                                    log={log}
+                                    searchTerm={searchTerm}
+                                    getLogLevel={getLogLevel}
+                                    formatTimestamp={formatTimestamp}
+                                    highlightText={highlightText}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
