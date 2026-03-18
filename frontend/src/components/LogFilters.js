@@ -13,6 +13,7 @@ function LogFilters({
   isStreaming,
   onToggleStream,
   onClearLogs,
+  onDownloadLogs,
   isLoading
 }) {
   const [showCustomDate, setShowCustomDate] = useState(false);
@@ -174,6 +175,13 @@ function LogFilters({
           onClick={onClearLogs}
         >
           🗑 Clear
+        </button>
+
+        <button
+          className="action-btn download-btn"
+          onClick={onDownloadLogs}
+        >
+          ⬇ Download
         </button>
       </div>
     </div>

@@ -405,6 +405,24 @@ function App() {
     return true;
   });
 
+  const handleDownloadLogs = () => {
+    if (!filteredLogs.length || !selectedContainer) return;
+
+    const lines = filteredLogs.map(log => {
+      const time = new Date(log.timestamp).toISOString();
+      const stream = log.stream === 'stderr' ? 'ERR' : 'OUT';
+      return `[${time}] [${stream}] ${log.message}`;
+    }).join('\n');
+
+    const blob = new Blob([lines], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${selectedContainer.name}-logs-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleClearLogs = () => {
     if (selectedContainer) {
       setLogsMap(prev => ({
@@ -544,6 +562,7 @@ function App() {
                   isStreaming={isStreaming}
                   onToggleStream={handleToggleStream}
                   onClearLogs={handleClearLogs}
+                  onDownloadLogs={handleDownloadLogs}
                   isLoading={isLoading}
                 />
               </div>
