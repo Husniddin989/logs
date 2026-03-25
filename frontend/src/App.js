@@ -214,64 +214,85 @@ function App() {
   useEffect(() => {
     if (!selectedContainer || timeRange !== 'live' || !token) return;
 
-    const ws = new WebSocket(getWsUrl());
-    wsRef.current = ws;
+    let destroyed = false;
+    let reconnectTimer = null;
+    const reconnectDelay = 3000;
 
-    ws.onopen = () => {
-      // First authenticate
-      ws.send(JSON.stringify({ action: 'auth', token }));
-    };
+    const connect = () => {
+      if (destroyed) return;
 
-    ws.onmessage = (event) => {
-      const message = JSON.parse(event.data);
+      const ws = new WebSocket(getWsUrl());
+      wsRef.current = ws;
 
-      if (message.type === 'auth') {
-        if (message.status === 'success') {
-          setIsConnected(true);
-          // Now subscribe to container
-          ws.send(JSON.stringify({
-            action: 'subscribe',
-            containerId: selectedContainer.fullId,
-            filter: searchTerm
-          }));
-          setIsStreaming(true);
-        } else {
-          console.error('WebSocket auth failed:', message.message);
-          handleLogout();
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ action: 'auth', token }));
+      };
+
+      ws.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+
+        if (message.type === 'auth') {
+          if (message.status === 'success') {
+            setIsConnected(true);
+            ws.send(JSON.stringify({
+              action: 'subscribe',
+              containerId: selectedContainer.fullId,
+              filter: searchTerm
+            }));
+            setIsStreaming(true);
+          } else {
+            console.error('WebSocket auth failed:', message.message);
+            handleLogout();
+          }
+          return;
         }
-        return;
-      }
 
-      if (message.type === 'log') {
-        const currentContainer = selectedContainerRef.current;
-        if (currentContainer) {
-          setLogsMap(prev => {
-            const containerId = currentContainer.fullId;
-            const currentLogs = prev[containerId] || [];
-            const newLogs = [...currentLogs, message.data].slice(-2000);
-            return { ...prev, [containerId]: newLogs };
-          });
+        if (message.type === 'log') {
+          const currentContainer = selectedContainerRef.current;
+          if (currentContainer) {
+            setLogsMap(prev => {
+              const containerId = currentContainer.fullId;
+              const currentLogs = prev[containerId] || [];
+              const newLogs = [...currentLogs, message.data].slice(-2000);
+              return { ...prev, [containerId]: newLogs };
+            });
+          }
+        } else if (message.type === 'end') {
+          // Stream tugadi, qayta ulaning
+          setIsConnected(false);
+          setIsStreaming(false);
+          ws.close();
+        } else if (message.type === 'error') {
+          console.error('WebSocket error:', message.message);
         }
-      } else if (message.type === 'error') {
-        console.error('WebSocket error:', message.message);
-      }
+      };
+
+      ws.onclose = () => {
+        setIsConnected(false);
+        setIsStreaming(false);
+        if (!destroyed) {
+          reconnectTimer = setTimeout(connect, reconnectDelay);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        setIsConnected(false);
+      };
     };
 
-    ws.onclose = () => {
-      setIsConnected(false);
-      setIsStreaming(false);
-    };
-
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      setIsConnected(false);
-    };
+    connect();
 
     return () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ action: 'unsubscribe' }));
+      destroyed = true;
+      clearTimeout(reconnectTimer);
+      const ws = wsRef.current;
+      if (ws) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ action: 'unsubscribe' }));
+        }
+        ws.close();
       }
-      ws.close();
     };
   }, [selectedContainer, timeRange, token, searchTerm]);
 
