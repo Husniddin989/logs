@@ -149,14 +149,17 @@ function UserManagement({ onBack, currentUser }) {
     }
   };
 
-  const toggleContainer = (containerId) => {
+  const toggleContainer = (container) => {
     setFormData(prev => {
       const current = prev.allowedContainers;
-      if (current.includes(containerId)) {
-        return { ...prev, allowedContainers: current.filter(c => c !== containerId) };
-      } else {
-        return { ...prev, allowedContainers: [...current, containerId] };
-      }
+      // A container may be stored by name or by full ID — handle both
+      const isAllowed = current.includes(container.name) || current.includes(container.fullId);
+      return {
+        ...prev,
+        allowedContainers: isAllowed
+          ? current.filter(c => c !== container.name && c !== container.fullId)
+          : [...current, container.name]
+      };
     });
   };
 
@@ -248,7 +251,7 @@ function UserManagement({ onBack, currentUser }) {
                           type="checkbox"
                           checked={formData.allowedContainers.includes(container.name) ||
                                    formData.allowedContainers.includes(container.fullId)}
-                          onChange={() => toggleContainer(container.name)}
+                          onChange={() => toggleContainer(container)}
                         />
                         <span className={`container-name ${container.state}`}>
                           {container.name}

@@ -11,6 +11,24 @@
   align-items: center;
 }
 
+/* Active custom range chip */
+.custom-range-chip {
+  background-color: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #79c0ff;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.custom-range-chip:hover {
+  border-color: #58a6ff;
+  background-color: #262c36;
+}
+
 /* Search */
 .search-group {
   flex: 1;

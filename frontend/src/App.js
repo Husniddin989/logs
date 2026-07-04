@@ -4,6 +4,7 @@ import LogViewer from './components/LogViewer';
 import LogFilters from './components/LogFilters';
 import Login from './components/Login';
 import UserManagement from './components/UserManagement';
+import { getLogLevel } from './utils/logLevel';
 import './App.css';
 
 const API_URL = process.env.REACT_APP_API_URL || '';
@@ -43,16 +44,29 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const wsRef = useRef(null);
   const selectedContainerRef = useRef(null);
+  const searchTermRef = useRef('');
 
   // Check for existing session on mount
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
     const savedUser = localStorage.getItem('user');
     if (savedToken && savedUser) {
-      setToken(savedToken);
-      setUser(JSON.parse(savedUser));
+      try {
+        const parsedUser = JSON.parse(savedUser);
+        setToken(savedToken);
+        setUser(parsedUser);
+      } catch {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+      }
     }
   }, []);
+
+  // Keep the latest search term available to the WebSocket handler
+  // without making the connection depend on it
+  useEffect(() => {
+    searchTermRef.current = searchTerm;
+  }, [searchTerm]);
 
   // Handle login
   const handleLogin = (userData, userToken) => {
@@ -167,8 +181,9 @@ function App() {
       if (data.logs && data.pagination) {
         setLogsMap(prev => ({
           ...prev,
+          // Older pages are prepended so the list stays chronological
           [container.fullId]: append
-            ? [...(prev[container.fullId] || []), ...data.logs]
+            ? [...data.logs, ...(prev[container.fullId] || [])]
             : data.logs
         }));
         setPaginationMap(prev => ({
@@ -237,7 +252,7 @@ function App() {
             ws.send(JSON.stringify({
               action: 'subscribe',
               containerId: selectedContainer.fullId,
-              filter: searchTerm
+              filter: searchTermRef.current
             }));
             setIsStreaming(true);
           } else {
@@ -294,7 +309,7 @@ function App() {
         ws.close();
       }
     };
-  }, [selectedContainer, timeRange, token, searchTerm]);
+  }, [selectedContainer, timeRange, token]);
 
   // Time range o'zgarganda loglarni yuklash
   useEffect(() => {
@@ -351,15 +366,17 @@ function App() {
     // If not doing search (just updating input), return
     if (!doSearch) return;
 
-    if (!term && timeRange === 'live') {
+    if (timeRange === 'live') {
+      // Update the live stream filter on the existing connection
+      // instead of reconnecting
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           action: 'subscribe',
           containerId: selectedContainer.fullId,
-          filter: ''
+          filter: term
         }));
       }
-      return;
+      if (!term) return;
     }
 
     setIsLoading(true);
@@ -409,22 +426,9 @@ function App() {
     }
   };
 
-  const filteredLogs = currentLogs.filter(log => {
-    if (levelFilter === 'all') return true;
-    if (levelFilter === 'error') {
-      return log.stream === 'stderr' ||
-        log.message.toLowerCase().includes('error') ||
-        log.message.toLowerCase().includes('err');
-    }
-    if (levelFilter === 'warn') {
-      return log.message.toLowerCase().includes('warn') ||
-        log.message.toLowerCase().includes('warning');
-    }
-    if (levelFilter === 'info') {
-      return log.message.toLowerCase().includes('info');
-    }
-    return true;
-  });
+  const filteredLogs = levelFilter === 'all'
+    ? currentLogs
+    : currentLogs.filter(log => getLogLevel(log) === levelFilter);
 
   const handleDownloadLogs = () => {
     if (!filteredLogs.length || !selectedContainer) return;

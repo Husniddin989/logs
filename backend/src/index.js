@@ -413,13 +413,14 @@ app.get('/api/containers/:id/logs', authMiddleware, async (req, res) => {
       );
     }
 
-    // Calculate pagination
+    // Calculate pagination: page 1 is the newest slice,
+    // higher pages go further back in time
     const totalLogs = logLines.length;
-    const totalPages = Math.ceil(totalLogs / pageLimit);
-    const startIndex = (pageNum - 1) * pageLimit;
-    const endIndex = startIndex + pageLimit;
+    const totalPages = Math.max(1, Math.ceil(totalLogs / pageLimit));
+    const endIndex = Math.max(0, totalLogs - (pageNum - 1) * pageLimit);
+    const startIndex = Math.max(0, endIndex - pageLimit);
 
-    // Get paginated logs
+    // Get paginated logs (kept in chronological order within the page)
     const paginatedLogs = logLines.slice(startIndex, endIndex);
 
     // Return with pagination metadata
@@ -430,7 +431,7 @@ app.get('/api/containers/:id/logs', authMiddleware, async (req, res) => {
         limit: pageLimit,
         totalLogs,
         totalPages,
-        hasMore: pageNum < totalPages
+        hasMore: startIndex > 0
       }
     });
   } catch (error) {
@@ -439,38 +440,68 @@ app.get('/api/containers/:id/logs', authMiddleware, async (req, res) => {
   }
 });
 
-// Parse Docker log buffer
-function parseDockerLogs(buffer) {
+// Demultiplex a Docker log buffer into {stream, text} frames.
+// Non-TTY containers prefix every frame with an 8-byte header:
+// [type, 0, 0, 0, size(4 bytes BE)]. TTY containers send raw text.
+// Returns any incomplete trailing bytes so streaming callers can
+// carry them over to the next chunk.
+function demuxDockerStream(buffer) {
+  const frames = [];
+  let offset = 0;
+
+  while (buffer.length - offset >= 8) {
+    const type = buffer[offset];
+    const isHeader = type <= 2 &&
+      buffer[offset + 1] === 0 &&
+      buffer[offset + 2] === 0 &&
+      buffer[offset + 3] === 0;
+
+    if (!isHeader) {
+      // TTY mode: no multiplexing, the rest of the buffer is raw output
+      frames.push({ stream: 'stdout', text: buffer.toString('utf8', offset) });
+      return { frames, rest: Buffer.alloc(0) };
+    }
+
+    const size = buffer.readUInt32BE(offset + 4);
+    if (buffer.length - offset - 8 < size) break; // incomplete frame
+
+    frames.push({
+      stream: type === 2 ? 'stderr' : 'stdout',
+      text: buffer.toString('utf8', offset + 8, offset + 8 + size)
+    });
+    offset += 8 + size;
+  }
+
+  return { frames, rest: buffer.slice(offset) };
+}
+
+// Turn demuxed frames into log line objects
+function framesToLogLines(frames) {
   const lines = [];
-  const str = buffer.toString('utf8');
-  const rawLines = str.split('\n').filter(line => line.trim());
 
-  rawLines.forEach((line, index) => {
-    let cleanLine = line;
-    if (line.charCodeAt(0) <= 2) {
-      cleanLine = line.substring(8);
-    }
+  frames.forEach((frame, frameIndex) => {
+    frame.text.split('\n').forEach((rawLine, lineIndex) => {
+      const line = rawLine.replace(/\r$/, '');
+      if (!line.trim()) return;
 
-    const timestampMatch = cleanLine.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.?\d*Z?)\s*(.*)/);
+      const timestampMatch = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.?\d*Z?)\s*(.*)/);
 
-    if (timestampMatch) {
       lines.push({
-        id: `${Date.now()}-${index}`,
-        timestamp: timestampMatch[1],
-        message: timestampMatch[2] || '',
-        stream: line.charCodeAt(0) === 2 ? 'stderr' : 'stdout'
+        id: `${Date.now()}-${frameIndex}-${lineIndex}`,
+        timestamp: timestampMatch ? timestampMatch[1] : new Date().toISOString(),
+        message: timestampMatch ? timestampMatch[2] || '' : line,
+        stream: frame.stream
       });
-    } else if (cleanLine.trim()) {
-      lines.push({
-        id: `${Date.now()}-${index}`,
-        timestamp: new Date().toISOString(),
-        message: cleanLine,
-        stream: 'stdout'
-      });
-    }
+    });
   });
 
   return lines;
+}
+
+// Parse a complete Docker log buffer
+function parseDockerLogs(buffer) {
+  const { frames } = demuxDockerStream(buffer);
+  return framesToLogLines(frames);
 }
 
 // ================== WEBSOCKET WITH AUTH ==================
@@ -548,8 +579,13 @@ wss.on('connection', (ws, req) => {
         currentStream = stream;
         activeStreams.set(containerId, stream);
 
+        // Frames can be split across chunks, so carry incomplete bytes over
+        let pending = Buffer.alloc(0);
         stream.on('data', (chunk) => {
-          const lines = parseDockerLogs(chunk);
+          pending = Buffer.concat([pending, chunk]);
+          const { frames, rest } = demuxDockerStream(pending);
+          pending = rest;
+          const lines = framesToLogLines(frames);
           lines.forEach(log => {
             if (data.filter) {
               const filterLower = data.filter.toLowerCase();

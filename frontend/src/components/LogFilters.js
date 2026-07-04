@@ -46,6 +46,15 @@ function LogFilters({
     }
   };
 
+  const formatRangeDate = (date) => {
+    return date.toLocaleString('en-GB', {
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
   return (
     <div className="log-filters">
       {/* Search */}
@@ -92,6 +101,17 @@ function LogFilters({
           <option value="custom">📅 Custom range</option>
         </select>
       </div>
+
+      {/* Active custom range — click to edit */}
+      {timeRange === 'custom' && customDateRange && !showCustomDate && (
+        <button
+          className="custom-range-chip"
+          onClick={() => setShowCustomDate(true)}
+          title="Edit date range"
+        >
+          {formatRangeDate(customDateRange.from)} — {formatRangeDate(customDateRange.to)} ✎
+        </button>
+      )}
 
       {/* Custom Date Range Modal */}
       {showCustomDate && (
