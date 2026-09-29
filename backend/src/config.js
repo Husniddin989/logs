@@ -64,6 +64,10 @@ function loadConfig(env = process.env) {
     dataDir: env.DATA_DIR || path.join(__dirname, 'data'),
     auditLogFile: env.AUDIT_LOG_FILE || null,
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    corsOrigins: (env.CORS_ORIGINS || '')
+      .split(',')
+      .map(o => o.trim())
+      .filter(Boolean),
     admin: {
       username: (env.ADMIN_USERNAME || 'admin').trim(),
       initialPassword: env.ADMIN_INITIAL_PASSWORD || null

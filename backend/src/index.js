@@ -33,7 +33,11 @@ async function main() {
   });
 
   const docker = new Docker({ socketPath: config.dockerSocket });
-  const { server } = createApp({ docker, userStore, tokens, audit, trustProxy: config.trustProxy });
+  const { server } = createApp({
+    docker, userStore, tokens, audit,
+    trustProxy: config.trustProxy,
+    corsOrigins: config.corsOrigins
+  });
 
   server.listen(config.port, () => {
     console.log(`Docker Log Viewer API running on port ${config.port}`);

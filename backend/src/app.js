@@ -47,12 +47,31 @@ function createApp({
   audit = createAuditLogger(),
   loginThrottle = createLoginThrottle(),
   trustProxy = 'loopback, linklocal, uniquelocal',
+  corsOrigins = [],
   wsRevalidateIntervalMs = 30 * 1000,
   wsAuthTimeoutMs = 10 * 1000
 }) {
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocket.Server({ server, maxPayload: 64 * 1024 });
+
+  // The frontend is served from the same origin as the API (nginx proxies
+  // /api and /ws to the backend), so cross-origin requests are not needed.
+  // By default no CORS headers are sent, which limits the browser API to the
+  // app's own origin. Set CORS_ORIGINS only if a separate frontend origin
+  // must call the API.
+  const allowedOrigins = new Set(corsOrigins);
+  const corsOptions = allowedOrigins.size === 0
+    ? { origin: false }
+    : {
+        origin(origin, callback) {
+          // Non-browser clients (curl, same-origin) send no Origin header
+          callback(null, !origin || allowedOrigins.has(origin));
+        }
+      };
+
+  // Do not advertise the framework
+  app.disable('x-powered-by');
 
   // Client IPs in audit entries come from X-Forwarded-For only across trusted
   // proxy hops (see TRUST_PROXY)
@@ -76,8 +95,19 @@ function createApp({
     userStore.save(data);
   }
 
-  app.use(cors());
-  app.use(express.json());
+  app.use(cors(corsOptions));
+  app.use(express.json({ limit: '1mb' }));
+
+  // Return JSON (not Express's default HTML page) for malformed request bodies
+  app.use((err, req, res, next) => {
+    if (err && err.type === 'entity.parse.failed') {
+      return res.status(400).json({ error: 'Invalid JSON body' });
+    }
+    if (err && err.type === 'entity.too.large') {
+      return res.status(413).json({ error: 'Request body too large' });
+    }
+    return next(err);
+  });
 
   // ================== AUTH MIDDLEWARE ==================
 

@@ -67,6 +67,7 @@ Upgrading an existing installation: follow [SECURITY.md](SECURITY.md) (new
 | `ADMIN_INITIAL_PASSWORD` | – | One-time admin password (min 12 chars), required on first start |
 | `AUDIT_LOG_FILE` | `/app/src/data/audit.log` (compose) | Append-only JSON-lines audit log; stdout only when unset |
 | `TRUST_PROXY` | private networks | Proxies allowed to set `X-Forwarded-For` (Express syntax) |
+| `CORS_ORIGINS` | – (same-origin only) | Extra browser origins allowed to call the API, comma-separated |
 | `FRONTEND_PORT` | `2000` | Web interface port |
 | `NODE_ENV` | `production` | Node.js environment |
 
@@ -278,7 +279,8 @@ or rename both work).
 3. **Docker socket access** - The `:ro` mount does not make the Docker API read-only: the backend can call any Docker endpoint, so every container reference is validated and authorised server-side against the container's canonical ID/name before it reaches Docker
 4. **User data persistence** - Users are stored in a Docker volume (`users-data`)
 5. **Brute-force protection** - 5 failed password checks per account and client IP (20 per IP) lock further attempts for 15 minutes
-6. **Nothing secret in the frontend** - Every `REACT_APP_*` value and every file in `frontend/build` is public. Production builds have no source maps, and `npm run check-build` (run by the Dockerfile) fails on source maps, credential-like strings or secret-named `REACT_APP_*` variables
+6. **HTTP hardening** - Security headers (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy) are set by the frontend nginx; HSTS and the server banner are handled by the host nginx (see [NGINX_SETUP.md](NGINX_SETUP.md)). CORS is same-origin by default, the framework banner (`X-Powered-By`) is disabled, and malformed request bodies get a JSON error
+7. **Nothing secret in the frontend** - Every `REACT_APP_*` value and every file in `frontend/build` is public. Production builds have no source maps, and `npm run check-build` (run by the Dockerfile) fails on source maps, credential-like strings or secret-named `REACT_APP_*` variables
 
 See [SECURITY.md](SECURITY.md) for the production upgrade and incident checklist.
 
