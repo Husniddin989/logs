@@ -163,6 +163,13 @@ function createApp({
 
   const authMiddleware = requireAuth();
 
+  // After an await, re-check against freshly loaded data that the requesting
+  // admin was not demoted, deleted or signed out in the meantime
+  function isStillAdmin(data, req) {
+    const actor = data.users.find(u => u.id === req.user.id);
+    return Boolean(actor && actor.role === 'admin' && (actor.tokenVersion || 0) === req.tokenClaims.ver);
+  }
+
   function adminMiddleware(req, res, next) {
     if (req.user.role !== 'admin') {
       audit.log('access.denied', {
@@ -342,13 +349,20 @@ function createApp({
         return fail(400, 'New password must differ from the current one', 'unchanged');
       }
 
+      const newHash = await hashPassword(newPassword);
+
+      // No await between loading and saving the store: a concurrent request
+      // (admin delete, revoke, reset) must not be overwritten by stale data
       const data = loadUsers();
       const user = data.users.find(u => u.id === req.user.id);
-      if (!user) {
-        return res.status(401).json({ error: 'User not found' });
+      if (!user || (user.tokenVersion || 0) !== req.tokenClaims.ver) {
+        return fail(401, 'Session is no longer valid', 'session_revoked');
+      }
+      if (user.password !== req.user.password) {
+        return fail(409, 'The password was changed in the meantime. Please sign in again.', 'conflict');
       }
 
-      user.password = await hashPassword(newPassword);
+      user.password = newHash;
       user.mustChangePassword = false;
       user.passwordChangedAt = new Date().toISOString();
       // Sign out every other session; the caller gets a fresh token below
@@ -388,16 +402,26 @@ function createApp({
         return res.status(400).json({ error: problem });
       }
 
-      const data = loadUsers();
+      if (loadUsers().users.some(u => u.username === username)) {
+        return res.status(400).json({ error: 'Username already exists' });
+      }
 
-      if (data.users.find(u => u.username === username)) {
+      const passwordHash = await hashPassword(password);
+
+      // Re-read after the await and save without awaiting in between, so a
+      // concurrent change to the store is not overwritten
+      const data = loadUsers();
+      if (!isStillAdmin(data, req)) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      if (data.users.some(u => u.username === username)) {
         return res.status(400).json({ error: 'Username already exists' });
       }
 
       const newUser = {
         id: crypto.randomUUID(),
         username,
-        password: await hashPassword(password),
+        password: passwordHash,
         role,
         allowedContainers: grants.value,
         mustChangePassword: true
@@ -427,7 +451,28 @@ function createApp({
       const { id } = req.params;
       const { username, password, role, allowedContainers } = req.body || {};
 
+      // Hash before touching the store: nothing may be awaited between
+      // loading and saving it, or concurrent changes would be overwritten
+      let passwordHash = null;
+      if (password) {
+        const snapshot = loadUsers().users.find(u => u.id === id);
+        if (!snapshot) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+        if (snapshot.id === req.user.id) {
+          return res.status(400).json({ error: 'Use "Change password" to change your own password' });
+        }
+        const passwordProblem = validatePassword(password, { username: username || snapshot.username });
+        if (passwordProblem) {
+          return res.status(400).json({ error: passwordProblem });
+        }
+        passwordHash = await hashPassword(password);
+      }
+
       const data = loadUsers();
+      if (passwordHash && !isStillAdmin(data, req)) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
       const userIndex = data.users.findIndex(u => u.id === id);
 
       if (userIndex === -1) {
@@ -484,7 +529,7 @@ function createApp({
         bumpTokenVersion(target);
       }
       if (password) {
-        target.password = await hashPassword(password);
+        target.password = passwordHash;
         target.mustChangePassword = true;
       }
       target.role = nextRole;
@@ -805,9 +850,32 @@ function createApp({
       return result.user;
     };
 
-    // Grants can be revoked while a stream is open, so check periodically
+    // Grants can be revoked while a stream is open, so check periodically.
+    // Grants may be by name, so the container's current name is re-read too:
+    // a renamed container must not keep streaming to a user granted the old name.
+    const recheckStream = async () => {
+      const streamed = current;
+      const user = revalidate();
+      if (!user || !streamed || current !== streamed || user.role === 'admin') return;
+
+      let fresh;
+      try {
+        const info = await docker.getContainer(streamed.container.id).inspect();
+        fresh = { id: info.Id, name: (info.Name || '').replace(/^\//, '') };
+      } catch (error) {
+        return; // container gone: its log stream ends by itself
+      }
+      if (current !== streamed) return;
+      if (canAccessContainer(user, fresh)) {
+        streamed.container = fresh;
+        return;
+      }
+      audit.log('access.revoked', { outcome: 'denied', actor: actorOf(user), container: fresh, ...wsContext });
+      stopStream();
+      send({ type: 'error', code: 'ACCESS_REVOKED', message: 'Access to this container was revoked' });
+    };
     const revalidateTimer = setInterval(() => {
-      if (current) revalidate();
+      if (current) recheckStream().catch(error => console.error('Stream re-check failed:', error));
     }, wsRevalidateIntervalMs);
 
     ws.on('message', async (message) => {

@@ -277,3 +277,56 @@ describe('forced password change', () => {
     assert.doesNotMatch(JSON.stringify(res.body), /\$2[aby]\$/);
   });
 });
+
+describe('concurrent user store updates', () => {
+  let srv;
+
+  before(async () => {
+    srv = await startTestServer({
+      users: [
+        { username: 'admin', role: 'admin' },
+        { username: 'alice', role: 'user', allowedContainers: ['web'] },
+        { username: 'bob', role: 'user', allowedContainers: ['web'] }
+      ],
+      containers: [{ name: 'web' }]
+    });
+  });
+
+  after(() => srv.close());
+
+  test('a password change in flight cannot resurrect a user deleted meanwhile', async () => {
+    const adminToken = await srv.tokenFor('admin');
+    const aliceToken = await srv.tokenFor('alice');
+    const alice = srv.readUsers().find(u => u.username === 'alice');
+
+    const change = srv.request('POST', '/api/auth/change-password', {
+      token: aliceToken, body: { currentPassword: srv.passwords.alice, newPassword: randomPassword() }
+    });
+    // Delete while the new password is being hashed
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const del = await srv.request('DELETE', `/api/users/${alice.id}`, { token: adminToken });
+    assert.equal(del.status, 200);
+
+    assert.notEqual((await change).status, 200);
+    assert.equal(srv.readUsers().some(u => u.username === 'alice'), false, 'alice stays deleted');
+  });
+
+  test('a password reset in flight cannot restore grants revoked meanwhile', async () => {
+    const adminToken = await srv.tokenFor('admin');
+    const bob = srv.readUsers().find(u => u.username === 'bob');
+
+    const reset = srv.request('PUT', `/api/users/${bob.id}`, {
+      token: adminToken, body: { password: randomPassword() }
+    });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const revoke = await srv.request('PUT', `/api/users/${bob.id}`, {
+      token: adminToken, body: { allowedContainers: [] }
+    });
+    assert.equal(revoke.status, 200);
+    assert.equal((await reset).status, 200);
+
+    const stored = srv.readUsers().find(u => u.username === 'bob');
+    assert.deepEqual(stored.allowedContainers, [], 'revocation survives');
+    assert.equal(stored.mustChangePassword, true, 'reset applied too');
+  });
+});

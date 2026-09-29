@@ -240,6 +240,28 @@ describe('(b) users cannot read containers they were not granted', () => {
     }
   });
 
+  test('WebSocket: a stream stops when the granted container is renamed away', async () => {
+    const renamed = await startTestServer({
+      users: [{ username: 'carol', role: 'user', allowedContainers: ['api'] }],
+      containers: [{ name: 'api', logs: ['api log'] }],
+      appOptions: { wsRevalidateIntervalMs: 50 }
+    });
+    const client = await connectWs(renamed.wsUrl);
+    try {
+      client.send({ action: 'auth', token: await renamed.tokenFor('carol') });
+      await client.waitFor(m => m.type === 'auth' && m.status === 'success');
+      client.send({ action: 'subscribe', containerId: 'api' });
+      await client.waitFor(m => m.type === 'log');
+
+      renamed.docker.containers[0].name = 'payments-db';
+      await client.waitFor(m => m.code === 'ACCESS_REVOKED', { timeout: 1000 });
+      assert.equal(renamed.docker.followerCount('payments-db'), 0);
+    } finally {
+      client.close();
+      await renamed.close();
+    }
+  });
+
   test('WebSocket: deleting the user ends the session', async () => {
     const adminToken = await srv.tokenFor('admin');
     const password = randomPassword();
