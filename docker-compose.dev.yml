@@ -11,6 +11,8 @@ services:
       - ./backend/src:/app/src
     environment:
       - NODE_ENV=development
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD:-}
     command: npm run dev
 
   # Frontend uchun local development

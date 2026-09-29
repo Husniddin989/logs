@@ -11,6 +11,8 @@ services:
     environment:
       - NODE_ENV=production
       - JWT_SECRET=${JWT_SECRET:-docker-log-viewer-secret-change-me}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD:-}
     networks:
       - log-viewer-network
 

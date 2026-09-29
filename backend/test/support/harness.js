@@ -5,6 +5,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const WebSocket = require('ws');
 const { createApp } = require('../../src/app');
+const { createUserStore } = require('../../src/userStore');
 const { createFakeDocker } = require('./fakeDocker');
 
 // Test credentials are generated per run so no secret-looking literal
@@ -30,14 +31,16 @@ async function startTestServer({ users = [], containers = [] } = {}) {
       username: u.username,
       password: bcrypt.hashSync(password, 4),
       role: u.role || 'user',
-      allowedContainers: u.allowedContainers || []
+      allowedContainers: u.allowedContainers || [],
+      ...(u.mustChangePassword ? { mustChangePassword: true } : {})
     };
   });
   fs.writeFileSync(usersFile, JSON.stringify({ users: storedUsers }, null, 2));
 
   const docker = createFakeDocker(containers);
   const jwtSecret = randomSecret();
-  const { server, wss } = createApp({ docker, usersFile, jwtSecret });
+  const userStore = createUserStore(usersFile);
+  const { server, wss } = createApp({ docker, userStore, jwtSecret });
 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
@@ -87,6 +90,7 @@ async function startTestServer({ users = [], containers = [] } = {}) {
     docker,
     dataDir,
     usersFile,
+    jwtSecret,
     passwords,
     request,
     login,

@@ -1,20 +1,28 @@
 const Docker = require('dockerode');
 const path = require('path');
 const { createApp } = require('./app');
-
-const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+const { loadConfig } = require('./config');
+const { createUserStore } = require('./userStore');
+const { ensureAdminAccount } = require('./bootstrap');
 
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'docker-log-viewer-secret-key-change-in-production';
 
-// Users data file path
-const USERS_FILE = path.join(__dirname, 'data', 'users.json');
+async function main() {
+  const config = loadConfig(process.env);
+  const userStore = createUserStore(path.join(config.dataDir, 'users.json'));
+  await ensureAdminAccount(userStore, config.admin);
 
-const { server } = createApp({ docker, usersFile: USERS_FILE, jwtSecret: JWT_SECRET });
+  const docker = new Docker({ socketPath: config.dockerSocket });
+  const { server } = createApp({ docker, userStore, jwtSecret: JWT_SECRET });
 
-const PORT = process.env.PORT || 2001;
-server.listen(PORT, () => {
-  console.log(`Docker Log Viewer API running on port ${PORT}`);
-  console.log(`WebSocket server ready for connections`);
-  console.log(`Default admin: admin / admin123`);
+  server.listen(config.port, () => {
+    console.log(`Docker Log Viewer API running on port ${config.port}`);
+    console.log(`WebSocket server ready for connections`);
+  });
+}
+
+main().catch(error => {
+  console.error(`[startup] ${error.message}`);
+  process.exit(1);
 });

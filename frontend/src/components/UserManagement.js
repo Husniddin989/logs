@@ -198,6 +198,7 @@ function UserManagement({ onBack, currentUser }) {
         <div className="um-form-overlay">
           <div className="um-form-container">
             <h2>{editingUser ? 'Edit User' : 'Add New User'}</h2>
+            {error && <div className="um-error">{error}</div>}
             <form onSubmit={handleSubmit}>
               <div className="form-group">
                 <label>Username</label>
@@ -210,15 +211,28 @@ function UserManagement({ onBack, currentUser }) {
                 />
               </div>
 
-              <div className="form-group">
-                <label>{editingUser ? 'New Password (leave empty to keep)' : 'Password'}</label>
-                <input
-                  type="password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  required={!editingUser}
-                />
-              </div>
+              {editingUser?.id === currentUser.id ? (
+                <p className="form-hint">
+                  To change your own password use the "Password" button in the header.
+                </p>
+              ) : (
+                <div className="form-group">
+                  <label>
+                    {editingUser ? 'New temporary password (leave empty to keep)' : 'Temporary password'}
+                  </label>
+                  <input
+                    type="password"
+                    value={formData.password}
+                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                    minLength={12}
+                    autoComplete="new-password"
+                    required={!editingUser}
+                  />
+                  <p className="form-hint">
+                    At least 12 characters. The user must choose a new password at next login.
+                  </p>
+                </div>
+              )}
 
               <div className="form-group">
                 <label>Role</label>
@@ -291,6 +305,11 @@ function UserManagement({ onBack, currentUser }) {
                 <td className="username-cell">
                   {user.username}
                   {user.id === currentUser.id && <span className="you-badge">You</span>}
+                  {user.passwordDisabled ? (
+                    <span className="status-badge danger">Password disabled</span>
+                  ) : user.mustChangePassword && (
+                    <span className="status-badge">Must change password</span>
+                  )}
                 </td>
                 <td>
                   <span className={`role-badge ${user.role}`}>{user.role}</span>

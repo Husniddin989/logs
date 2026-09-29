@@ -2,39 +2,52 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const WebSocket = require('ws');
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const fs = require('fs');
 const { parseDockerLogs, demuxDockerStream, framesToLogLines } = require('./dockerLogs');
+const { validatePassword, hashPassword, verifyPassword } = require('./passwords');
 
-function createApp({ docker, usersFile, jwtSecret }) {
+const PASSWORD_CHANGE_SCOPE = 'password_change';
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    allowedContainers: user.allowedContainers,
+    mustChangePassword: Boolean(user.mustChangePassword)
+  };
+}
+
+function createApp({ docker, userStore, jwtSecret }) {
   const JWT_SECRET = jwtSecret;
-  const USERS_FILE = usersFile;
 
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocket.Server({ server });
 
-  // Load users from file
   function loadUsers() {
-    try {
-      const data = fs.readFileSync(USERS_FILE, 'utf8');
-      return JSON.parse(data);
-    } catch (error) {
-      console.error('Error loading users:', error);
-      return { users: [] };
-    }
+    return userStore.load();
   }
 
-  // Save users to file
   function saveUsers(data) {
-    try {
-      fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2));
-      return true;
-    } catch (error) {
-      console.error('Error saving users:', error);
-      return false;
-    }
+    userStore.save(data);
+  }
+
+  function signSessionToken(user) {
+    return jwt.sign(
+      { userId: user.id, username: user.username, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+  }
+
+  // Only good for POST /api/auth/change-password
+  function signPasswordChangeToken(user) {
+    return jwt.sign(
+      { userId: user.id, username: user.username, scope: PASSWORD_CHANGE_SCOPE },
+      JWT_SECRET,
+      { expiresIn: '10m' }
+    );
   }
 
   app.use(cors());
@@ -45,30 +58,46 @@ function createApp({ docker, usersFile, jwtSecret }) {
 
   // ================== AUTH MIDDLEWARE ==================
 
-  function authMiddleware(req, res, next) {
-    const authHeader = req.headers.authorization;
+  // A user who still has to replace an initial/reset password may only reach
+  // routes created with { allowPasswordChange: true }.
+  function requireAuth({ allowPasswordChange = false } = {}) {
+    return (req, res, next) => {
+      const authHeader = req.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'No token provided' });
+      }
 
-    const token = authHeader.split(' ')[1];
+      let decoded;
+      try {
+        decoded = jwt.verify(authHeader.slice('Bearer '.length), JWT_SECRET);
+      } catch (error) {
+        return res.status(401).json({ error: 'Invalid token' });
+      }
 
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      const { users } = loadUsers();
-      const user = users.find(u => u.id === decoded.userId);
+      let user;
+      try {
+        user = loadUsers().users.find(u => u.id === decoded.userId);
+      } catch (error) {
+        console.error('Error loading users:', error);
+        return res.status(500).json({ error: 'User store unavailable' });
+      }
 
       if (!user) {
         return res.status(401).json({ error: 'User not found' });
       }
 
+      const passwordChangePending = decoded.scope === PASSWORD_CHANGE_SCOPE || user.mustChangePassword;
+      if (passwordChangePending && !allowPasswordChange) {
+        return res.status(403).json({ error: 'Password change required', code: 'PASSWORD_CHANGE_REQUIRED' });
+      }
+
       req.user = user;
       next();
-    } catch (error) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
+    };
   }
+
+  const authMiddleware = requireAuth();
 
   function adminMiddleware(req, res, next) {
     if (req.user.role !== 'admin') {
@@ -109,29 +138,23 @@ function createApp({ docker, usersFile, jwtSecret }) {
       const { users } = loadUsers();
       const user = users.find(u => u.username === username);
 
-      if (!user) {
+      // verifyPassword also burns time for unknown users and disabled passwords
+      const validPassword = await verifyPassword(password, user?.password);
+      if (!user || !validPassword) {
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
-      const validPassword = await bcrypt.compare(password, user.password);
-      if (!validPassword) {
-        return res.status(401).json({ error: 'Invalid credentials' });
+      if (user.mustChangePassword) {
+        return res.json({
+          token: signPasswordChangeToken(user),
+          mustChangePassword: true,
+          user: publicUser(user)
+        });
       }
-
-      const token = jwt.sign(
-        { userId: user.id, username: user.username, role: user.role },
-        JWT_SECRET,
-        { expiresIn: '24h' }
-      );
 
       res.json({
-        token,
-        user: {
-          id: user.id,
-          username: user.username,
-          role: user.role,
-          allowedContainers: user.allowedContainers
-        }
+        token: signSessionToken(user),
+        user: publicUser(user)
       });
     } catch (error) {
       console.error('Login error:', error);
@@ -140,13 +163,43 @@ function createApp({ docker, usersFile, jwtSecret }) {
   });
 
   // Get current user
-  app.get('/api/auth/me', authMiddleware, (req, res) => {
-    res.json({
-      id: req.user.id,
-      username: req.user.username,
-      role: req.user.role,
-      allowedContainers: req.user.allowedContainers
-    });
+  app.get('/api/auth/me', requireAuth({ allowPasswordChange: true }), (req, res) => {
+    res.json(publicUser(req.user));
+  });
+
+  // Change own password. Also completes the forced change after first login.
+  app.post('/api/auth/change-password', requireAuth({ allowPasswordChange: true }), async (req, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body || {};
+
+      if (!(await verifyPassword(currentPassword, req.user.password))) {
+        return res.status(400).json({ error: 'Current password is incorrect' });
+      }
+
+      const problem = validatePassword(newPassword, { username: req.user.username });
+      if (problem) {
+        return res.status(400).json({ error: problem });
+      }
+      if (newPassword === currentPassword) {
+        return res.status(400).json({ error: 'New password must differ from the current one' });
+      }
+
+      const data = loadUsers();
+      const user = data.users.find(u => u.id === req.user.id);
+      if (!user) {
+        return res.status(401).json({ error: 'User not found' });
+      }
+
+      user.password = await hashPassword(newPassword);
+      user.mustChangePassword = false;
+      user.passwordChangedAt = new Date().toISOString();
+      saveUsers(data);
+
+      res.json({ token: signSessionToken(user), user: publicUser(user) });
+    } catch (error) {
+      console.error('Change password error:', error);
+      res.status(500).json({ error: 'Failed to change password' });
+    }
   });
 
   // ================== USER MANAGEMENT (Admin only) ==================
@@ -154,15 +207,11 @@ function createApp({ docker, usersFile, jwtSecret }) {
   // Get all users
   app.get('/api/users', authMiddleware, adminMiddleware, (req, res) => {
     const { users } = loadUsers();
-    res.json(users.map(u => ({
-      id: u.id,
-      username: u.username,
-      role: u.role,
-      allowedContainers: u.allowedContainers
-    })));
+    res.json(users.map(u => ({ ...publicUser(u), passwordDisabled: !u.password })));
   });
 
-  // Create user
+  // Create user. The admin-chosen password is temporary: the user has to
+  // replace it at first login.
   app.post('/api/users', authMiddleware, adminMiddleware, async (req, res) => {
     try {
       const { username, password, role, allowedContainers } = req.body;
@@ -171,30 +220,30 @@ function createApp({ docker, usersFile, jwtSecret }) {
         return res.status(400).json({ error: 'Username and password required' });
       }
 
+      const problem = validatePassword(password, { username });
+      if (problem) {
+        return res.status(400).json({ error: problem });
+      }
+
       const data = loadUsers();
 
       if (data.users.find(u => u.username === username)) {
         return res.status(400).json({ error: 'Username already exists' });
       }
 
-      const hashedPassword = await bcrypt.hash(password, 10);
       const newUser = {
         id: Date.now().toString(),
         username,
-        password: hashedPassword,
+        password: await hashPassword(password),
         role: role || 'user',
-        allowedContainers: allowedContainers || []
+        allowedContainers: allowedContainers || [],
+        mustChangePassword: true
       };
 
       data.users.push(newUser);
       saveUsers(data);
 
-      res.status(201).json({
-        id: newUser.id,
-        username: newUser.username,
-        role: newUser.role,
-        allowedContainers: newUser.allowedContainers
-      });
+      res.status(201).json(publicUser(newUser));
     } catch (error) {
       console.error('Create user error:', error);
       res.status(500).json({ error: 'Failed to create user' });
@@ -214,19 +263,30 @@ function createApp({ docker, usersFile, jwtSecret }) {
         return res.status(404).json({ error: 'User not found' });
       }
 
-      if (username) data.users[userIndex].username = username;
-      if (password) data.users[userIndex].password = await bcrypt.hash(password, 10);
-      if (role) data.users[userIndex].role = role;
-      if (allowedContainers !== undefined) data.users[userIndex].allowedContainers = allowedContainers;
+      const target = data.users[userIndex];
+
+      if (password) {
+        // Changing your own password must prove knowledge of the current one
+        if (target.id === req.user.id) {
+          return res.status(400).json({ error: 'Use "Change password" to change your own password' });
+        }
+        const problem = validatePassword(password, { username: username || target.username });
+        if (problem) {
+          return res.status(400).json({ error: problem });
+        }
+      }
+
+      if (username) target.username = username;
+      if (password) {
+        target.password = await hashPassword(password);
+        target.mustChangePassword = true;
+      }
+      if (role) target.role = role;
+      if (allowedContainers !== undefined) target.allowedContainers = allowedContainers;
 
       saveUsers(data);
 
-      res.json({
-        id: data.users[userIndex].id,
-        username: data.users[userIndex].username,
-        role: data.users[userIndex].role,
-        allowedContainers: data.users[userIndex].allowedContainers
-      });
+      res.json(publicUser(target));
     } catch (error) {
       console.error('Update user error:', error);
       res.status(500).json({ error: 'Failed to update user' });
@@ -453,14 +513,20 @@ function createApp({ docker, usersFile, jwtSecret }) {
           try {
             const decoded = jwt.verify(data.token, JWT_SECRET);
             const { users } = loadUsers();
-            authenticatedUser = users.find(u => u.id === decoded.userId);
+            const user = users.find(u => u.id === decoded.userId);
 
-            if (authenticatedUser) {
-              ws.send(JSON.stringify({ type: 'auth', status: 'success' }));
-            } else {
+            if (!user) {
+              authenticatedUser = null;
               ws.send(JSON.stringify({ type: 'auth', status: 'failed', message: 'User not found' }));
+            } else if (decoded.scope === PASSWORD_CHANGE_SCOPE || user.mustChangePassword) {
+              authenticatedUser = null;
+              ws.send(JSON.stringify({ type: 'auth', status: 'failed', message: 'Password change required' }));
+            } else {
+              authenticatedUser = user;
+              ws.send(JSON.stringify({ type: 'auth', status: 'success' }));
             }
           } catch (error) {
+            authenticatedUser = null;
             ws.send(JSON.stringify({ type: 'auth', status: 'failed', message: 'Invalid token' }));
           }
           return;

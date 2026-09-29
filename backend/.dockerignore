@@ -1,0 +1,4 @@
+node_modules
+test
+# Runtime data lives in the users-data volume and must never be baked into the image
+src/data

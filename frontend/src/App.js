@@ -3,6 +3,7 @@ import ContainerList from './components/ContainerList';
 import LogViewer from './components/LogViewer';
 import LogFilters from './components/LogFilters';
 import Login from './components/Login';
+import ChangePassword from './components/ChangePassword';
 import UserManagement from './components/UserManagement';
 import { getLogLevel } from './utils/logLevel';
 import './App.css';
@@ -27,6 +28,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
 
   // App state
   const [containers, setContainers] = useState([]);
@@ -74,12 +76,20 @@ function App() {
     setToken(userToken);
   };
 
+  const handlePasswordChanged = (userData, userToken) => {
+    setUser(userData);
+    setToken(userToken);
+    setShowChangePassword(false);
+  };
+
   // Handle logout
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setUser(null);
     setToken(null);
+    setShowChangePassword(false);
+    setShowUserManagement(false);
     setContainers([]);
     setSelectedContainer(null);
     setLogsMap({});
@@ -87,7 +97,30 @@ function App() {
     if (wsRef.current) {
       wsRef.current.close();
     }
-  };
+  }, []);
+
+  // Returns true when the response was an auth failure that has been handled
+  const handleAuthFailure = useCallback(async (response) => {
+    if (response.status === 401) {
+      handleLogout();
+      return true;
+    }
+    if (response.status === 403) {
+      const body = await response.clone().json().catch(() => ({}));
+      if (body.code === 'PASSWORD_CHANGE_REQUIRED') {
+        setUser(prev => {
+          if (!prev) return prev;
+          const next = { ...prev, mustChangePassword: true };
+          localStorage.setItem('user', JSON.stringify(next));
+          return next;
+        });
+        return true;
+      }
+    }
+    return false;
+  }, [handleLogout]);
+
+  const mustChangePassword = Boolean(user?.mustChangePassword);
 
   // Fetch containers
   const fetchContainers = useCallback(async () => {
@@ -96,16 +129,13 @@ function App() {
       const response = await fetch(`${API_URL}/api/containers`, {
         headers: getAuthHeaders()
       });
-      if (response.status === 401) {
-        handleLogout();
-        return;
-      }
+      if (await handleAuthFailure(response)) return;
       const data = await response.json();
-      setContainers(data);
+      if (Array.isArray(data)) setContainers(data);
     } catch (error) {
       console.error('Failed to fetch containers:', error);
     }
-  }, [token]);
+  }, [token, handleAuthFailure]);
 
   // Fetch Docker info
   const fetchDockerInfo = useCallback(async () => {
@@ -114,26 +144,23 @@ function App() {
       const response = await fetch(`${API_URL}/api/docker/info`, {
         headers: getAuthHeaders()
       });
-      if (response.status === 401) {
-        handleLogout();
-        return;
-      }
+      if (await handleAuthFailure(response)) return;
       const data = await response.json();
       setDockerInfo(data);
     } catch (error) {
       console.error('Failed to fetch Docker info:', error);
     }
-  }, [token]);
+  }, [token, handleAuthFailure]);
 
   // Initial data fetch
   useEffect(() => {
-    if (token) {
+    if (token && !mustChangePassword) {
       fetchContainers();
       fetchDockerInfo();
       const interval = setInterval(fetchContainers, 10000);
       return () => clearInterval(interval);
     }
-  }, [token, fetchContainers, fetchDockerInfo]);
+  }, [token, mustChangePassword, fetchContainers, fetchDockerInfo]);
 
   // Update ref when selectedContainer changes
   useEffect(() => {
@@ -171,10 +198,7 @@ function App() {
         `${API_URL}/api/containers/${container.fullId}/logs?${params}`,
         { headers: getAuthHeaders() }
       );
-      if (response.status === 401) {
-        handleLogout();
-        return;
-      }
+      if (await handleAuthFailure(response)) return;
       const data = await response.json();
 
       // Handle paginated response
@@ -206,7 +230,7 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [token]);
+  }, [token, handleAuthFailure]);
 
   // Load more logs (pagination)
   const handleLoadMore = useCallback(() => {
@@ -397,10 +421,7 @@ function App() {
         `${API_URL}/api/containers/${selectedContainer.fullId}/logs?${params}`,
         { headers: getAuthHeaders() }
       );
-      if (response.status === 401) {
-        handleLogout();
-        return;
-      }
+      if (await handleAuthFailure(response)) return;
       const data = await response.json();
 
       // Handle paginated response
@@ -485,6 +506,17 @@ function App() {
     return <Login onLogin={handleLogin} />;
   }
 
+  if (mustChangePassword || showChangePassword) {
+    return (
+      <ChangePassword
+        forced={mustChangePassword}
+        onChanged={handlePasswordChanged}
+        onCancel={mustChangePassword ? handleLogout : () => setShowChangePassword(false)}
+        onSessionExpired={handleLogout}
+      />
+    );
+  }
+
   // Show user management panel
   if (showUserManagement) {
     return (
@@ -523,6 +555,9 @@ function App() {
                 Users
               </button>
             )}
+            <button className="admin-btn" onClick={() => setShowChangePassword(true)}>
+              Password
+            </button>
             <button className="logout-btn" onClick={handleLogout}>
               Logout
             </button>

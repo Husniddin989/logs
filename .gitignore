@@ -6,6 +6,9 @@ node_modules/
 frontend/build/
 backend/dist/
 
+# Runtime data (users, password hashes)
+backend/src/data/
+
 # Environment files
 .env
 .env.local

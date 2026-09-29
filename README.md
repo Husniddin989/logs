@@ -26,7 +26,7 @@ cd docker-log-viewer
 # Copy environment file
 cp .env.example .env
 
-# Edit .env and set a secure JWT_SECRET
+# Edit .env: set a secure JWT_SECRET and a one-time ADMIN_INITIAL_PASSWORD
 nano .env
 ```
 
@@ -40,11 +40,16 @@ docker compose up -d --build
 
 Open browser: `http://localhost:2000`
 
-**Default credentials:**
-- Username: `admin`
-- Password: `admin123`
+There are no default credentials. On first start the backend creates the admin
+account (`ADMIN_USERNAME`, default `admin`) with the password from
+`ADMIN_INITIAL_PASSWORD` and refuses to start without it. At the first login
+you are asked to choose a new password. After that, remove
+`ADMIN_INITIAL_PASSWORD` from `.env`; it is ignored as long as an admin with a
+working password exists.
 
-> Change the admin password after first login!
+If the admin password is lost, set `ADMIN_INITIAL_PASSWORD` again and remove the
+`password` value of the admin in the `users-data` volume; the account is
+re-initialised on the next start.
 
 ## Configuration
 
@@ -53,6 +58,8 @@ Open browser: `http://localhost:2000`
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `JWT_SECRET` | `docker-log-viewer-secret-change-me` | JWT signing key (MUST change!) |
+| `ADMIN_USERNAME` | `admin` | Username of the bootstrap admin account |
+| `ADMIN_INITIAL_PASSWORD` | – | One-time admin password (min 12 chars), required on first start |
 | `FRONTEND_PORT` | `2000` | Web interface port |
 | `NODE_ENV` | `production` | Node.js environment |
 
@@ -168,9 +175,10 @@ npm start
 docker-log-viewer/
 ├── backend/
 │   ├── src/
-│   │   ├── index.js          # Main API server
-│   │   └── data/
-│   │       └── users.json    # User storage
+│   │   ├── index.js          # Process entrypoint (config, admin bootstrap)
+│   │   ├── app.js            # REST API + WebSocket server
+│   │   └── data/             # Runtime data (users.json), not in git
+│   ├── test/                 # node:test suites (npm test)
 │   ├── Dockerfile
 │   └── package.json
 ├── frontend/
@@ -193,7 +201,7 @@ docker-log-viewer/
 ## Security Notes
 
 1. **Change JWT_SECRET** - Use a strong, random key in production
-2. **Change admin password** - After first login, change the default password
+2. **No default credentials** - The admin is created from `ADMIN_INITIAL_PASSWORD` and must pick a new password at first login
 3. **Docker socket access** - Backend has read-only access to Docker socket
 4. **User data persistence** - Users are stored in a Docker volume (`users-data`)
 
