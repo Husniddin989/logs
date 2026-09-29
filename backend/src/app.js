@@ -5,6 +5,7 @@ const http = require('http');
 const proxyaddr = require('proxy-addr');
 const WebSocket = require('ws');
 const { createAuditLogger } = require('./audit');
+const { createLoginThrottle } = require('./loginThrottle');
 const { parseDockerLogs, demuxDockerStream, framesToLogLines } = require('./dockerLogs');
 const { validatePassword, hashPassword, verifyPassword } = require('./passwords');
 const { TokenError, PASSWORD_CHANGE_SCOPE } = require('./tokens');
@@ -44,6 +45,7 @@ function createApp({
   userStore,
   tokens,
   audit = createAuditLogger(),
+  loginThrottle = createLoginThrottle(),
   trustProxy = 'loopback, linklocal, uniquelocal',
   wsRevalidateIntervalMs = 30 * 1000,
   wsAuthTimeoutMs = 10 * 1000
@@ -215,16 +217,27 @@ function createApp({
         return res.status(400).json({ error: 'Username and password required' });
       }
 
+      const wait = loginThrottle.retryAfter(username, req.ip);
+      if (wait > 0) {
+        audit.log('auth.login', { outcome: 'failure', reason: 'rate_limited', username, ...ctx });
+        res.set('Retry-After', String(wait));
+        return res.status(429).json({
+          error: `Too many failed login attempts. Try again in ${Math.ceil(wait / 60)} minute(s).`
+        });
+      }
+
       const { users } = loadUsers();
       const user = users.find(u => u.username === username);
 
       // verifyPassword also burns time for unknown users and disabled passwords
       const validPassword = await verifyPassword(password, user?.password);
       if (!user || !validPassword) {
+        loginThrottle.recordFailure(username, req.ip);
         const reason = !user ? 'unknown_user' : (!user.password ? 'password_disabled' : 'bad_password');
         audit.log('auth.login', { outcome: 'failure', reason, username, ...ctx });
         return res.status(401).json({ error: 'Invalid credentials' });
       }
+      loginThrottle.recordSuccess(username, req.ip);
 
       if (user.mustChangePassword) {
         audit.log('auth.login', {
@@ -306,10 +319,20 @@ function createApp({
 
     try {
       const { currentPassword, newPassword } = req.body || {};
+      // Throttled like logins, so a stolen session cannot guess the password
+      const throttleKey = `change-password:${req.user.id}`;
+
+      const wait = loginThrottle.retryAfter(throttleKey, req.ip);
+      if (wait > 0) {
+        res.set('Retry-After', String(wait));
+        return fail(429, `Too many failed attempts. Try again in ${Math.ceil(wait / 60)} minute(s).`, 'rate_limited');
+      }
 
       if (!(await verifyPassword(currentPassword, req.user.password))) {
+        loginThrottle.recordFailure(throttleKey, req.ip);
         return fail(400, 'Current password is incorrect', 'bad_current_password');
       }
+      loginThrottle.recordSuccess(throttleKey, req.ip);
 
       const problem = validatePassword(newPassword, { username: req.user.username });
       if (problem) {

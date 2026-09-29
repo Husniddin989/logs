@@ -8,6 +8,7 @@ const { createApp } = require('../../src/app');
 const { createUserStore } = require('../../src/userStore');
 const { createTokenService } = require('../../src/tokens');
 const { createAuditLogger } = require('../../src/audit');
+const { createLoginThrottle } = require('../../src/loginThrottle');
 const { createFakeDocker } = require('./fakeDocker');
 
 // Test credentials are generated per run so no secret-looking literal
@@ -70,7 +71,8 @@ async function startTestServer({
   });
   const auditEntries = [];
   const audit = createAuditLogger({ stream: { write: line => auditEntries.push(line) } });
-  const { server, wss } = createApp({ docker, userStore, tokens, audit, ...appOptions });
+  const loginThrottle = createLoginThrottle({ now: clock.now });
+  const { server, wss } = createApp({ docker, userStore, tokens, audit, loginThrottle, ...appOptions });
 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
