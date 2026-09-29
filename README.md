@@ -47,9 +47,12 @@ you are asked to choose a new password. After that, remove
 `ADMIN_INITIAL_PASSWORD` from `.env`; it is ignored as long as an admin with a
 working password exists.
 
-If the admin password is lost, set `ADMIN_INITIAL_PASSWORD` again and remove the
-`password` value of the admin in the `users-data` volume; the account is
-re-initialised on the next start.
+If the admin password is lost, set `ADMIN_INITIAL_PASSWORD` again, set the
+admin's `"password"` to `null` in `users.json` in the `users-data` volume and
+restart the backend; the account is re-initialised with a forced password change.
+
+Upgrading an existing installation: follow [SECURITY.md](SECURITY.md) (new
+`JWT_SECRET`, one-time admin password, password rotation, compromise checks).
 
 ## Configuration
 
@@ -213,7 +216,11 @@ docker-log-viewer/
 │   ├── src/
 │   │   ├── index.js          # Process entrypoint (config, admin bootstrap)
 │   │   ├── app.js            # REST API + WebSocket server
-│   │   └── data/             # Runtime data (users.json), not in git
+│   │   ├── access.js         # Container reference validation and grants
+│   │   ├── tokens.js         # JWT issue/verify/revoke
+│   │   ├── audit.js          # JSON-lines audit log
+│   │   ├── config.js, bootstrap.js, passwords.js, loginThrottle.js, userStore.js
+│   │   └── data/             # Runtime data (users.json, audit.log), not in git
 │   ├── test/                 # node:test suites (npm test)
 │   ├── Dockerfile
 │   └── package.json
@@ -243,7 +250,7 @@ container re-creation). Passwords, hashes and tokens are never logged.
 
 | Event | When |
 |-------|------|
-| `auth.login` | every login attempt: `success`, or `failure` with `unknown_user` / `bad_password` / `password_disabled` / `missing_fields` |
+| `auth.login` | every login attempt: `success`, or `failure` with `unknown_user` / `bad_password` / `password_disabled` / `missing_fields` / `rate_limited` |
 | `auth.token_rejected` | a request with a missing, invalid, expired or revoked token |
 | `auth.refresh`, `auth.logout`, `auth.logout_all`, `auth.password_change` | session lifecycle |
 | `access.denied`, `access.revoked` | non-admin on an admin route, container not granted, malformed container reference, grant revoked mid-stream |
@@ -270,9 +277,17 @@ or rename both work).
 2. **No default credentials** - The admin is created from `ADMIN_INITIAL_PASSWORD` and must pick a new password at first login
 3. **Docker socket access** - The `:ro` mount does not make the Docker API read-only: the backend can call any Docker endpoint, so every container reference is validated and authorised server-side against the container's canonical ID/name before it reaches Docker
 4. **User data persistence** - Users are stored in a Docker volume (`users-data`)
-5. **Nothing secret in the frontend** - Every `REACT_APP_*` value and every file in `frontend/build` is public. Production builds have no source maps, and `npm run check-build` (run by the Dockerfile) fails on source maps, credential-like strings or secret-named `REACT_APP_*` variables
+5. **Brute-force protection** - 5 failed password checks per account and client IP (20 per IP) lock further attempts for 15 minutes
+6. **Nothing secret in the frontend** - Every `REACT_APP_*` value and every file in `frontend/build` is public. Production builds have no source maps, and `npm run check-build` (run by the Dockerfile) fails on source maps, credential-like strings or secret-named `REACT_APP_*` variables
+
+See [SECURITY.md](SECURITY.md) for the production upgrade and incident checklist.
 
 ## Troubleshooting
+
+### Backend does not start
+
+- `docker compose logs backend | grep startup` shows the reason: missing or weak
+  `JWT_SECRET`, or no admin yet and no `ADMIN_INITIAL_PASSWORD`
 
 ### Containers not showing
 
@@ -281,7 +296,8 @@ or rename both work).
 
 ### Login issues
 
-- Verify JWT_SECRET is set correctly
+- "Too many failed login attempts": wait 15 minutes (see `auth.login` entries with `rate_limited` in the audit log)
+- Sessions end after `SESSION_MAX_AGE` (12h) or when the laptop slept longer than `JWT_ACCESS_TTL`; just log in again
 - Check browser console for errors
 - Clear localStorage and try again
 
