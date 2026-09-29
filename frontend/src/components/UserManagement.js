@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './UserManagement.css';
 
 const API_URL = process.env.REACT_APP_API_URL || '';
@@ -17,6 +17,7 @@ function UserManagement({ onBack, currentUser, onSessionRevoked }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const formContainerRef = useRef(null);
 
   // Form state
   const [showForm, setShowForm] = useState(false);
@@ -122,6 +123,8 @@ function UserManagement({ onBack, currentUser, onSessionRevoked }) {
       fetchUsers();
     } catch (err) {
       setError(err.message);
+      // The message sits at the top of the (scrollable) form
+      formContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
 
@@ -218,7 +221,7 @@ function UserManagement({ onBack, currentUser, onSessionRevoked }) {
 
       {showForm && (
         <div className="um-form-overlay">
-          <div className="um-form-container">
+          <div className="um-form-container" ref={formContainerRef}>
             <h2>{editingUser ? 'Edit User' : 'Add New User'}</h2>
             {error && <div className="um-error">{error}</div>}
             <form onSubmit={handleSubmit}>
