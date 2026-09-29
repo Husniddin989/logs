@@ -37,6 +37,13 @@ describe('failed login throttling', () => {
     assert.equal(entry.ip, '198.51.100.1');
   });
 
+  test('concurrent guesses cannot slip past the limit', async () => {
+    const guesses = Array.from({ length: 30 }, (_, i) => loginFrom('198.51.100.9', 'alice', `burst-${i}-xxxxxxxx`));
+    const statuses = (await Promise.all(guesses)).map(r => r.status);
+    assert.ok(statuses.filter(s => s === 401).length <= 5, `checked ${statuses.filter(s => s === 401).length} passwords`);
+    assert.equal((await loginFrom('198.51.100.9', 'alice', srv.passwords.alice)).status, 429);
+  });
+
   test('an attacker cannot lock the real user out from another address', async () => {
     for (let i = 0; i < 6; i++) {
       await loginFrom('198.51.100.1', 'admin', `guess-${i}-xxxxxxxx`);

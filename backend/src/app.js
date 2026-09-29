@@ -213,38 +213,47 @@ function createApp({
 
   // ================== AUTH ENDPOINTS ==================
 
+  // Per-process key: failed attempts against unknown usernames can be
+  // correlated without writing the typed value (often a password) to the log
+  const usernameDigestKey = crypto.randomBytes(32);
+  const loginSubject = (username, user) => (user
+    ? { username: user.username }
+    : { usernameDigest: crypto.createHmac('sha256', usernameDigestKey).update(username).digest('hex').slice(0, 16) });
+
   // Login
   app.post('/api/auth/login', async (req, res) => {
     const ctx = requestContext(req);
+    let attempt = null;
     try {
       const { username, password } = req.body || {};
 
-      if (!username || !password) {
-        audit.log('auth.login', { outcome: 'failure', reason: 'missing_fields', username, ...ctx });
+      if (typeof username !== 'string' || typeof password !== 'string' || !username || !password ||
+          username.length > 128 || password.length > 1024) {
+        audit.log('auth.login', { outcome: 'failure', reason: 'missing_fields', ...ctx });
         return res.status(400).json({ error: 'Username and password required' });
-      }
-
-      const wait = loginThrottle.retryAfter(username, req.ip);
-      if (wait > 0) {
-        audit.log('auth.login', { outcome: 'failure', reason: 'rate_limited', username, ...ctx });
-        res.set('Retry-After', String(wait));
-        return res.status(429).json({
-          error: `Too many failed login attempts. Try again in ${Math.ceil(wait / 60)} minute(s).`
-        });
       }
 
       const { users } = loadUsers();
       const user = users.find(u => u.username === username);
+      const subject = loginSubject(username, user);
+
+      attempt = loginThrottle.begin(username, req.ip);
+      if (attempt.retryAfter) {
+        audit.log('auth.login', { outcome: 'failure', reason: 'rate_limited', ...subject, ...ctx });
+        res.set('Retry-After', String(attempt.retryAfter));
+        return res.status(429).json({
+          error: `Too many failed login attempts. Try again in ${Math.ceil(attempt.retryAfter / 60)} minute(s).`
+        });
+      }
 
       // verifyPassword also burns time for unknown users and disabled passwords
       const validPassword = await verifyPassword(password, user?.password);
+      attempt.finish(Boolean(user && validPassword));
       if (!user || !validPassword) {
-        loginThrottle.recordFailure(username, req.ip);
         const reason = !user ? 'unknown_user' : (!user.password ? 'password_disabled' : 'bad_password');
-        audit.log('auth.login', { outcome: 'failure', reason, username, ...ctx });
+        audit.log('auth.login', { outcome: 'failure', reason, ...subject, ...ctx });
         return res.status(401).json({ error: 'Invalid credentials' });
       }
-      loginThrottle.recordSuccess(username, req.ip);
 
       if (user.mustChangePassword) {
         audit.log('auth.login', {
@@ -263,6 +272,7 @@ function createApp({
         user: publicUser(user)
       });
     } catch (error) {
+      if (attempt) attempt.finish();
       console.error('Login error:', error);
       res.status(500).json({ error: 'Login failed' });
     }
@@ -329,17 +339,17 @@ function createApp({
       // Throttled like logins, so a stolen session cannot guess the password
       const throttleKey = `change-password:${req.user.id}`;
 
-      const wait = loginThrottle.retryAfter(throttleKey, req.ip);
-      if (wait > 0) {
-        res.set('Retry-After', String(wait));
-        return fail(429, `Too many failed attempts. Try again in ${Math.ceil(wait / 60)} minute(s).`, 'rate_limited');
+      const attempt = loginThrottle.begin(throttleKey, req.ip);
+      if (attempt.retryAfter) {
+        res.set('Retry-After', String(attempt.retryAfter));
+        return fail(429, `Too many failed attempts. Try again in ${Math.ceil(attempt.retryAfter / 60)} minute(s).`, 'rate_limited');
       }
 
-      if (!(await verifyPassword(currentPassword, req.user.password))) {
-        loginThrottle.recordFailure(throttleKey, req.ip);
+      const currentOk = await verifyPassword(currentPassword, req.user.password).catch(() => false);
+      attempt.finish(currentOk);
+      if (!currentOk) {
         return fail(400, 'Current password is incorrect', 'bad_current_password');
       }
-      loginThrottle.recordSuccess(throttleKey, req.ip);
 
       const problem = validatePassword(newPassword, { username: req.user.username });
       if (problem) {
@@ -486,7 +496,8 @@ function createApp({
         nextRole
       );
 
-      const problem = (username !== undefined && validateUsername(username)) ||
+      // Legacy accounts may predate the username rules: only a new name is validated
+      const problem = (username !== undefined && username !== target.username && validateUsername(username)) ||
         (role !== undefined && validateRole(role)) ||
         grants.error;
       if (problem) {

@@ -47,8 +47,11 @@ describe('authentication events', () => {
     assert.equal(entry.type, 'audit');
     assert.ok(Date.parse(entry.ts));
 
-    await srv.request('POST', '/api/auth/login', { headers, body: { username: 'nobody', password: 'whatever-123' } });
-    assert.equal(last('auth.login').reason, 'unknown_user');
+    await srv.request('POST', '/api/auth/login', { headers, body: { username: 'typed-a-password-here', password: 'x' } });
+    const unknown = last('auth.login');
+    assert.equal(unknown.reason, 'unknown_user');
+    assert.equal(unknown.username, undefined, 'unknown usernames are not logged verbatim');
+    assert.match(unknown.usernameDigest, /^[0-9a-f]{16}$/);
 
     await srv.request('POST', '/api/auth/login', { headers, body: {} });
     assert.equal(last('auth.login').reason, 'missing_fields');
