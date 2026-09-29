@@ -9,11 +9,9 @@ COPY public ./public
 COPY src ./src
 COPY scripts ./scripts
 
+# Build-time values are compiled into the public bundle: never pass secrets
 ARG REACT_APP_API_URL
-ARG REACT_APP_WS_URL
-
 ENV REACT_APP_API_URL=$REACT_APP_API_URL
-ENV REACT_APP_WS_URL=$REACT_APP_WS_URL
 
 # Source maps would publish the original source code (sourcesContent)
 ENV GENERATE_SOURCEMAP=false
