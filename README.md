@@ -177,6 +177,32 @@ npm install
 npm start
 ```
 
+### Tests and security checks
+
+```bash
+cd backend && npm test          # API, authorization, token and WebSocket tests
+cd frontend && npm run build && npm run check-build   # no source maps / secrets in the bundle
+```
+
+CI (`.github/workflows/ci.yml`) runs the backend tests, the frontend build
+check and a [gitleaks](https://github.com/gitleaks/gitleaks) scan of the whole
+git history on every push and pull request. Rules live in `.gitleaks.toml`
+(gitleaks defaults plus committed password hashes, runtime user data and
+`.env` files); `.gitleaksignore` lists the only accepted historical finding
+and why.
+
+Enable the same scan before every commit, either with the pre-commit framework
+
+```bash
+pip install pre-commit && pre-commit install
+```
+
+or with the plain git hook (uses a local `gitleaks` or the pinned Docker image)
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ### Project Structure
 
 ```

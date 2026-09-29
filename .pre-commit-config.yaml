@@ -1,0 +1,9 @@
+# Blocks commits that contain secrets.
+#   pip install pre-commit && pre-commit install
+# Without Python, use the plain git hook instead:
+#   git config core.hooksPath .githooks
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

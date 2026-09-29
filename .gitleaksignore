@@ -1,0 +1,9 @@
+# Known findings in history. Add an entry here only for something that is
+# already public and neutralised, and say why.
+#
+# b84750f added the old seed backend/src/data/users.json. Its admin hash
+# belongs to the published default password; the file was removed in the
+# default-credential fix and bootstrap.js disables any account still using
+# that hash at startup. Rewriting history would not un-publish it.
+b84750fb5e79c86603a75b992b42d4a2823d6288:backend/src/data/users.json:runtime-user-data:0
+b84750fb5e79c86603a75b992b42d4a2823d6288:backend/src/data/users.json:bcrypt-password-hash:6

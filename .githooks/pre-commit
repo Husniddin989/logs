@@ -1,0 +1,22 @@
+#!/bin/sh
+# Blocks commits that contain secrets. Enable with:
+#   git config core.hooksPath .githooks
+# Uses a local gitleaks if installed, otherwise the pinned Docker image.
+
+GITLEAKS_IMAGE="ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
+ROOT=$(git rev-parse --show-toplevel)
+
+if command -v gitleaks >/dev/null 2>&1; then
+  exec gitleaks git --pre-commit --staged --redact --verbose \
+    --config "$ROOT/.gitleaks.toml" --gitleaks-ignore-path "$ROOT/.gitleaksignore" "$ROOT"
+fi
+
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  exec docker run --rm -v "$ROOT:/repo" "$GITLEAKS_IMAGE" \
+    git --pre-commit --staged --redact --verbose \
+    --config /repo/.gitleaks.toml --gitleaks-ignore-path /repo/.gitleaksignore /repo
+fi
+
+echo "pre-commit: gitleaks is not available, so the commit was not scanned for secrets." >&2
+echo "Install it (brew install gitleaks) or start Docker, then commit again." >&2
+exit 1
