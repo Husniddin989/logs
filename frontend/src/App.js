@@ -303,6 +303,9 @@ function App() {
           ws.close();
         } else if (message.type === 'error') {
           console.error('WebSocket error:', message.message);
+          if (message.code === 'ACCESS_REVOKED') {
+            setIsStreaming(false);
+          }
         }
       };
 

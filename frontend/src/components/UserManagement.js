@@ -84,7 +84,8 @@ function UserManagement({ onBack, currentUser }) {
       username: user.username,
       password: '',
       role: user.role,
-      allowedContainers: user.allowedContainers || []
+      // "*" is admin-only; regular users get explicit grants
+      allowedContainers: (user.allowedContainers || []).filter(c => c !== '*')
     });
     setShowForm(true);
   };
@@ -161,14 +162,6 @@ function UserManagement({ onBack, currentUser }) {
           : [...current, container.name]
       };
     });
-  };
-
-  const toggleAllContainers = () => {
-    if (formData.allowedContainers.includes('*')) {
-      setFormData(prev => ({ ...prev, allowedContainers: [] }));
-    } else {
-      setFormData(prev => ({ ...prev, allowedContainers: ['*'] }));
-    }
   };
 
   if (loading) {
@@ -250,16 +243,10 @@ function UserManagement({ onBack, currentUser }) {
                 <div className="form-group">
                   <label>Allowed Containers</label>
                   <div className="um-container-list">
-                    <label className="container-checkbox all-containers">
-                      <input
-                        type="checkbox"
-                        checked={formData.allowedContainers.includes('*')}
-                        onChange={toggleAllContainers}
-                      />
-                      <span>All Containers (*)</span>
-                    </label>
-
-                    {!formData.allowedContainers.includes('*') && containers.map(container => (
+                    {containers.length === 0 && (
+                      <p className="form-hint">No containers found.</p>
+                    )}
+                    {containers.map(container => (
                       <label key={container.fullId} className="container-checkbox">
                         <input
                           type="checkbox"
@@ -316,8 +303,6 @@ function UserManagement({ onBack, currentUser }) {
                 </td>
                 <td className="containers-cell">
                   {user.role === 'admin' ? (
-                    <span className="all-access">All containers</span>
-                  ) : user.allowedContainers?.includes('*') ? (
                     <span className="all-access">All containers</span>
                   ) : user.allowedContainers?.length > 0 ? (
                     <span className="container-count">

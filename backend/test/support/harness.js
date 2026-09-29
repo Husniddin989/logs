@@ -18,7 +18,7 @@ function randomPassword() {
   return `Pw-${crypto.randomBytes(12).toString('hex')}`;
 }
 
-async function startTestServer({ users = [], containers = [] } = {}) {
+async function startTestServer({ users = [], containers = [], appOptions = {} } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dlv-test-'));
   const usersFile = path.join(dataDir, 'users.json');
   const passwords = {};
@@ -40,7 +40,7 @@ async function startTestServer({ users = [], containers = [] } = {}) {
   const docker = createFakeDocker(containers);
   const jwtSecret = randomSecret();
   const userStore = createUserStore(usersFile);
-  const { server, wss } = createApp({ docker, userStore, jwtSecret });
+  const { server, wss } = createApp({ docker, userStore, jwtSecret, ...appOptions });
 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();

@@ -64,4 +64,23 @@ async function ensureAdminAccount(store, { username, initialPassword }, {
   return result;
 }
 
-module.exports = { ensureAdminAccount, fingerprint, PUBLISHED_SEED_FINGERPRINTS };
+// "*" used to grant regular users every container. It is now reserved for
+// admins (who do not need it), so strip it from stored grants instead of
+// letting the UI show access the server no longer honours.
+function removeUserWildcardGrants(store, { logger = console } = {}) {
+  const data = store.load();
+  const affected = [];
+
+  for (const user of data.users) {
+    if (user.role !== 'admin' && Array.isArray(user.allowedContainers) && user.allowedContainers.includes('*')) {
+      user.allowedContainers = user.allowedContainers.filter(entry => entry !== '*');
+      affected.push(user.username);
+      logger.warn(`[security] Removed the "*" (all containers) grant from non-admin user "${user.username}"; grant containers explicitly.`);
+    }
+  }
+
+  if (affected.length > 0) store.save(data);
+  return affected;
+}
+
+module.exports = { ensureAdminAccount, removeUserWildcardGrants, fingerprint, PUBLISHED_SEED_FINGERPRINTS };

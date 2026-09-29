@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
@@ -5,6 +6,13 @@ const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
 const { parseDockerLogs, demuxDockerStream, framesToLogLines } = require('./dockerLogs');
 const { validatePassword, hashPassword, verifyPassword } = require('./passwords');
+const {
+  isValidContainerRef,
+  canAccessContainer,
+  normalizeAllowedContainers,
+  validateUsername,
+  validateRole
+} = require('./access');
 
 const PASSWORD_CHANGE_SCOPE = 'password_change';
 
@@ -18,12 +26,22 @@ function publicUser(user) {
   };
 }
 
-function createApp({ docker, userStore, jwtSecret }) {
+function containerIdentity(summary) {
+  return { id: summary.Id, name: (summary.Names?.[0] || '').replace(/^\//, '') };
+}
+
+function createApp({
+  docker,
+  userStore,
+  jwtSecret,
+  wsRevalidateIntervalMs = 30 * 1000,
+  wsAuthTimeoutMs = 10 * 1000
+}) {
   const JWT_SECRET = jwtSecret;
 
   const app = express();
   const server = http.createServer(app);
-  const wss = new WebSocket.Server({ server });
+  const wss = new WebSocket.Server({ server, maxPayload: 64 * 1024 });
 
   function loadUsers() {
     return userStore.load();
@@ -53,10 +71,36 @@ function createApp({ docker, userStore, jwtSecret }) {
   app.use(cors());
   app.use(express.json());
 
-  // Store active log streams
-  const activeStreams = new Map();
-
   // ================== AUTH MIDDLEWARE ==================
+
+  // Verifies a token and loads its user fresh from the store, so role,
+  // container grants and deletions take effect immediately. Shared by the
+  // REST middleware and the WebSocket. Returns { user, claims } or
+  // { status, error, code? }. Throws only if the user store is unreadable.
+  function authenticateToken(token, { allowPasswordChange = false } = {}) {
+    if (typeof token !== 'string' || !token) {
+      return { status: 401, error: 'No token provided' };
+    }
+
+    let claims;
+    try {
+      claims = jwt.verify(token, JWT_SECRET);
+    } catch (error) {
+      return { status: 401, error: 'Invalid token' };
+    }
+
+    const user = loadUsers().users.find(u => u.id === claims.userId);
+    if (!user) {
+      return { status: 401, error: 'User not found' };
+    }
+
+    const passwordChangePending = claims.scope === PASSWORD_CHANGE_SCOPE || user.mustChangePassword;
+    if (passwordChangePending && !allowPasswordChange) {
+      return { status: 403, error: 'Password change required', code: 'PASSWORD_CHANGE_REQUIRED' };
+    }
+
+    return { user, claims };
+  }
 
   // A user who still has to replace an initial/reset password may only reach
   // routes created with { allowPasswordChange: true }.
@@ -68,31 +112,20 @@ function createApp({ docker, userStore, jwtSecret }) {
         return res.status(401).json({ error: 'No token provided' });
       }
 
-      let decoded;
+      let result;
       try {
-        decoded = jwt.verify(authHeader.slice('Bearer '.length), JWT_SECRET);
-      } catch (error) {
-        return res.status(401).json({ error: 'Invalid token' });
-      }
-
-      let user;
-      try {
-        user = loadUsers().users.find(u => u.id === decoded.userId);
+        result = authenticateToken(authHeader.slice('Bearer '.length), { allowPasswordChange });
       } catch (error) {
         console.error('Error loading users:', error);
         return res.status(500).json({ error: 'User store unavailable' });
       }
 
-      if (!user) {
-        return res.status(401).json({ error: 'User not found' });
+      if (!result.user) {
+        return res.status(result.status).json({ error: result.error, ...(result.code ? { code: result.code } : {}) });
       }
 
-      const passwordChangePending = decoded.scope === PASSWORD_CHANGE_SCOPE || user.mustChangePassword;
-      if (passwordChangePending && !allowPasswordChange) {
-        return res.status(403).json({ error: 'Password change required', code: 'PASSWORD_CHANGE_REQUIRED' });
-      }
-
-      req.user = user;
+      req.user = result.user;
+      req.tokenClaims = result.claims;
       next();
     };
   }
@@ -106,22 +139,32 @@ function createApp({ docker, userStore, jwtSecret }) {
     next();
   }
 
-  // Check if user has access to container
-  function hasContainerAccess(user, containerIdOrName, containerName = null) {
-    if (user.role === 'admin') return true;
-    if (!user.allowedContainers || user.allowedContainers.length === 0) return false;
-    if (user.allowedContainers.includes('*')) return true;
+  // Resolves a client-supplied container reference to the container's
+  // canonical identity and checks the user's grant against it. Non-admins get
+  // the same 403 for "missing" and "forbidden" so they cannot probe for
+  // container names. Returns { container } or { status, error }.
+  async function authorizeContainer(user, ref) {
+    if (!isValidContainerRef(ref)) {
+      return { status: 400, error: 'Invalid container id' };
+    }
 
-    // Check by container ID or name
-    return user.allowedContainers.some(allowed => {
-      // Exact match by name
-      if (containerName && allowed === containerName) return true;
-      // Exact match by ID or name parameter
-      if (allowed === containerIdOrName) return true;
-      // Partial ID match (short ID vs full ID)
-      if (containerIdOrName.startsWith(allowed) || allowed.startsWith(containerIdOrName)) return true;
-      return false;
-    });
+    let container;
+    try {
+      const info = await docker.getContainer(ref).inspect();
+      container = { id: info.Id, name: (info.Name || '').replace(/^\//, '') };
+    } catch (error) {
+      if (error.statusCode !== 404) throw error;
+    }
+
+    if (!container) {
+      return user.role === 'admin'
+        ? { status: 404, error: 'Container not found' }
+        : { status: 403, error: 'Access denied to this container' };
+    }
+    if (!canAccessContainer(user, container)) {
+      return { status: 403, error: 'Access denied to this container' };
+    }
+    return { container };
   }
 
   // ================== AUTH ENDPOINTS ==================
@@ -214,13 +257,15 @@ function createApp({ docker, userStore, jwtSecret }) {
   // replace it at first login.
   app.post('/api/users', authMiddleware, adminMiddleware, async (req, res) => {
     try {
-      const { username, password, role, allowedContainers } = req.body;
+      const { username, password, role = 'user', allowedContainers = [] } = req.body || {};
 
       if (!username || !password) {
         return res.status(400).json({ error: 'Username and password required' });
       }
 
-      const problem = validatePassword(password, { username });
+      const grants = normalizeAllowedContainers(allowedContainers, role);
+      const problem = validateUsername(username) || validateRole(role) || grants.error ||
+        validatePassword(password, { username });
       if (problem) {
         return res.status(400).json({ error: problem });
       }
@@ -232,11 +277,11 @@ function createApp({ docker, userStore, jwtSecret }) {
       }
 
       const newUser = {
-        id: Date.now().toString(),
+        id: crypto.randomUUID(),
         username,
         password: await hashPassword(password),
-        role: role || 'user',
-        allowedContainers: allowedContainers || [],
+        role,
+        allowedContainers: grants.value,
         mustChangePassword: true
       };
 
@@ -254,7 +299,7 @@ function createApp({ docker, userStore, jwtSecret }) {
   app.put('/api/users/:id', authMiddleware, adminMiddleware, async (req, res) => {
     try {
       const { id } = req.params;
-      const { username, password, role, allowedContainers } = req.body;
+      const { username, password, role, allowedContainers } = req.body || {};
 
       const data = loadUsers();
       const userIndex = data.users.findIndex(u => u.id === id);
@@ -264,15 +309,36 @@ function createApp({ docker, userStore, jwtSecret }) {
       }
 
       const target = data.users[userIndex];
+      const nextRole = role || target.role;
+      const grants = normalizeAllowedContainers(
+        allowedContainers !== undefined ? allowedContainers : (role ? target.allowedContainers : undefined),
+        nextRole
+      );
+
+      const problem = (username !== undefined && validateUsername(username)) ||
+        (role !== undefined && validateRole(role)) ||
+        grants.error;
+      if (problem) {
+        return res.status(400).json({ error: problem });
+      }
+
+      if (username && username !== target.username && data.users.some(u => u.username === username)) {
+        return res.status(400).json({ error: 'Username already exists' });
+      }
+
+      if (target.role === 'admin' && nextRole !== 'admin' &&
+          data.users.filter(u => u.role === 'admin').length <= 1) {
+        return res.status(400).json({ error: 'Cannot demote the last admin' });
+      }
 
       if (password) {
         // Changing your own password must prove knowledge of the current one
         if (target.id === req.user.id) {
           return res.status(400).json({ error: 'Use "Change password" to change your own password' });
         }
-        const problem = validatePassword(password, { username: username || target.username });
-        if (problem) {
-          return res.status(400).json({ error: problem });
+        const passwordProblem = validatePassword(password, { username: username || target.username });
+        if (passwordProblem) {
+          return res.status(400).json({ error: passwordProblem });
         }
       }
 
@@ -281,8 +347,8 @@ function createApp({ docker, userStore, jwtSecret }) {
         target.password = await hashPassword(password);
         target.mustChangePassword = true;
       }
-      if (role) target.role = role;
-      if (allowedContainers !== undefined) target.allowedContainers = allowedContainers;
+      target.role = nextRole;
+      if (grants.value !== undefined) target.allowedContainers = grants.value;
 
       saveUsers(data);
 
@@ -328,7 +394,10 @@ function createApp({ docker, userStore, jwtSecret }) {
   // Get all containers (filtered by user access)
   app.get('/api/containers', authMiddleware, async (req, res) => {
     try {
-      const containers = await docker.listContainers({ all: true, size: true });
+      // Filter before gathering stats so nothing is computed for (or leaked
+      // about) containers the user may not see
+      const containers = (await docker.listContainers({ all: true, size: true }))
+        .filter(c => canAccessContainer(req.user, containerIdentity(c)));
 
       // Get stats for running containers
       const statsPromises = containers.map(async (c) => {
@@ -382,14 +451,7 @@ function createApp({ docker, userStore, jwtSecret }) {
         return baseInfo;
       });
 
-      let formatted = await Promise.all(statsPromises);
-
-      // Filter containers based on user access
-      if (req.user.role !== 'admin' && !req.user.allowedContainers?.includes('*')) {
-        formatted = formatted.filter(c => hasContainerAccess(req.user, c.fullId, c.name));
-      }
-
-      res.json(formatted);
+      res.json(await Promise.all(statsPromises));
     } catch (error) {
       console.error('Error fetching containers:', error);
       res.status(500).json({ error: 'Failed to fetch containers' });
@@ -399,28 +461,19 @@ function createApp({ docker, userStore, jwtSecret }) {
   // Get container logs (with access check) - OPTIMIZED with pagination
   app.get('/api/containers/:id/logs', authMiddleware, async (req, res) => {
     try {
-      const { id } = req.params;
-      const container = docker.getContainer(id);
-
-      // Get container info to check access by name
-      let containerName = null;
-      try {
-        const info = await container.inspect();
-        containerName = info.Name?.replace('/', '') || null;
-      } catch (e) {
-        // Container might not exist
+      const access = await authorizeContainer(req.user, req.params.id);
+      if (!access.container) {
+        return res.status(access.status).json({ error: access.error });
       }
 
-      // Check access
-      if (!hasContainerAccess(req.user, id, containerName)) {
-        return res.status(403).json({ error: 'Access denied to this container' });
-      }
+      // Use the canonical ID from here on, never the client's reference
+      const container = docker.getContainer(access.container.id);
 
       const { tail, since, until, search, timeRange, page, limit } = req.query;
 
       // Pagination parameters
-      const pageNum = parseInt(page) || 1;
-      const pageLimit = Math.min(parseInt(limit) || 500, 2000); // Max 2000 logs per page
+      const pageNum = Math.max(1, parseInt(page) || 1);
+      const pageLimit = Math.min(Math.max(1, parseInt(limit) || 500), 2000); // Max 2000 logs per page
 
       const options = {
         stdout: true,
@@ -429,11 +482,13 @@ function createApp({ docker, userStore, jwtSecret }) {
       };
 
       // Custom date range (since/until takes priority)
-      if (since) {
-        options.since = Math.floor(new Date(since).getTime() / 1000);
-      }
-      if (until) {
-        options.until = Math.floor(new Date(until).getTime() / 1000);
+      for (const [key, value] of [['since', since], ['until', until]]) {
+        if (!value) continue;
+        const seconds = Math.floor(new Date(value).getTime() / 1000);
+        if (!Number.isFinite(seconds)) {
+          return res.status(400).json({ error: `Invalid ${key} date` });
+        }
+        options[key] = seconds;
       }
 
       // Time range filter (only if no custom date range)
@@ -453,7 +508,7 @@ function createApp({ docker, userStore, jwtSecret }) {
           default: options.tail = 100;
         }
       } else if (!since && !until && tail) {
-        options.tail = parseInt(tail);
+        options.tail = Math.min(Math.max(1, parseInt(tail) || 100), 10000);
       } else if (!since && !until) {
         options.tail = 100;
       }
@@ -500,73 +555,116 @@ function createApp({ docker, userStore, jwtSecret }) {
 
   wss.on('connection', (ws, req) => {
     console.log('Client connected');
-    let currentStream = null;
-    let currentContainerId = null;
-    let authenticatedUser = null;
+    let session = null; // { token, userId } once authenticated
+    let current = null; // { stream, container } while streaming
+    let subscribeSeq = 0;
+
+    const send = (payload) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+    };
+
+    const stopStream = () => {
+      if (current) {
+        current.stream.destroy();
+        current = null;
+      }
+    };
+
+    const endSession = (message) => {
+      stopStream();
+      session = null;
+      send({ type: 'auth', status: 'failed', message });
+      ws.close(4401, 'Unauthorized');
+    };
+
+    // Sockets that never authenticate are dropped
+    const authTimer = setTimeout(() => {
+      if (!session) ws.close(4401, 'Authentication timeout');
+    }, wsAuthTimeoutMs);
+
+    // Re-checks the session token and the grant for the container being
+    // streamed. Returns the current user, or null after tearing down.
+    const revalidate = () => {
+      if (!session) return null;
+      let result;
+      try {
+        result = authenticateToken(session.token);
+      } catch (error) {
+        console.error('Error loading users:', error);
+        stopStream();
+        send({ type: 'error', message: 'Request failed' });
+        return null;
+      }
+
+      if (!result.user || result.user.id !== session.userId) {
+        endSession(result.error || 'Session is no longer valid');
+        return null;
+      }
+      if (current && !canAccessContainer(result.user, current.container)) {
+        stopStream();
+        send({ type: 'error', code: 'ACCESS_REVOKED', message: 'Access to this container was revoked' });
+      }
+      return result.user;
+    };
+
+    // Grants can be revoked while a stream is open, so check periodically
+    const revalidateTimer = setInterval(() => {
+      if (current) revalidate();
+    }, wsRevalidateIntervalMs);
 
     ws.on('message', async (message) => {
+      let data;
       try {
-        const data = JSON.parse(message);
+        data = JSON.parse(message);
+      } catch (error) {
+        send({ type: 'error', message: 'Invalid message' });
+        return;
+      }
+      if (!data || typeof data !== 'object') return;
 
+      try {
         // Handle authentication
         if (data.action === 'auth') {
-          try {
-            const decoded = jwt.verify(data.token, JWT_SECRET);
-            const { users } = loadUsers();
-            const user = users.find(u => u.id === decoded.userId);
-
-            if (!user) {
-              authenticatedUser = null;
-              ws.send(JSON.stringify({ type: 'auth', status: 'failed', message: 'User not found' }));
-            } else if (decoded.scope === PASSWORD_CHANGE_SCOPE || user.mustChangePassword) {
-              authenticatedUser = null;
-              ws.send(JSON.stringify({ type: 'auth', status: 'failed', message: 'Password change required' }));
-            } else {
-              authenticatedUser = user;
-              ws.send(JSON.stringify({ type: 'auth', status: 'success' }));
-            }
-          } catch (error) {
-            authenticatedUser = null;
-            ws.send(JSON.stringify({ type: 'auth', status: 'failed', message: 'Invalid token' }));
+          const result = authenticateToken(data.token);
+          if (!result.user) {
+            stopStream();
+            session = null;
+            send({ type: 'auth', status: 'failed', message: result.error });
+            return;
           }
+          // An open socket cannot be handed over to a different user
+          if (session && session.userId !== result.user.id) {
+            endSession('Session user mismatch');
+            return;
+          }
+          session = { token: data.token, userId: result.user.id };
+          clearTimeout(authTimer);
+          send({ type: 'auth', status: 'success' });
           return;
         }
 
         // Require authentication for other actions
-        if (!authenticatedUser) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Not authenticated' }));
+        if (!session) {
+          send({ type: 'error', message: 'Not authenticated' });
           return;
         }
 
         if (data.action === 'subscribe') {
-          const containerId = data.containerId;
-          const container = docker.getContainer(containerId);
+          // Token and container grant are verified again on every subscribe
+          const user = revalidate();
+          if (!user) return;
 
-          // Get container name for access check
-          let containerName = null;
-          try {
-            const info = await container.inspect();
-            containerName = info.Name?.replace('/', '') || null;
-          } catch (e) {
-            ws.send(JSON.stringify({ type: 'error', message: 'Container not found' }));
+          const access = await authorizeContainer(user, data.containerId);
+          if (!access.container) {
+            send({ type: 'error', message: access.error });
             return;
           }
 
-          // Check access
-          if (!hasContainerAccess(authenticatedUser, containerId, containerName)) {
-            ws.send(JSON.stringify({ type: 'error', message: 'Access denied to this container' }));
-            return;
-          }
-
-          // Unsubscribe from previous
-          if (currentStream) {
-            currentStream.destroy();
-            activeStreams.delete(currentContainerId);
-          }
-
-          currentContainerId = containerId;
-          console.log(`Subscribing to container: ${containerId} (${containerName})`);
-          const stream = await container.logs({
+          stopStream();
+          const seq = ++subscribeSeq;
+          const { container } = access;
+          console.log(`Subscribing to container: ${container.id} (${container.name})`);
+          const stream = await docker.getContainer(container.id).logs({
             follow: true,
             stdout: true,
             stderr: true,
@@ -574,8 +672,14 @@ function createApp({ docker, userStore, jwtSecret }) {
             tail: 50
           });
 
-          currentStream = stream;
-          activeStreams.set(containerId, stream);
+          // A newer subscribe/unsubscribe or a logout happened meanwhile
+          if (seq !== subscribeSeq || !session || ws.readyState !== WebSocket.OPEN) {
+            stream.destroy();
+            return;
+          }
+          current = { stream, container };
+
+          const filter = typeof data.filter === 'string' ? data.filter.slice(0, 500).toLowerCase() : '';
 
           // Frames can be split across chunks, so carry incomplete bytes over
           let pending = Buffer.alloc(0);
@@ -583,55 +687,38 @@ function createApp({ docker, userStore, jwtSecret }) {
             pending = Buffer.concat([pending, chunk]);
             const { frames, rest } = demuxDockerStream(pending);
             pending = rest;
-            const lines = framesToLogLines(frames);
-            lines.forEach(log => {
-              if (data.filter) {
-                const filterLower = data.filter.toLowerCase();
-                if (!log.message.toLowerCase().includes(filterLower)) {
-                  return;
-                }
-              }
-
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'log', data: log }));
-              }
+            framesToLogLines(frames).forEach(log => {
+              if (filter && !log.message.toLowerCase().includes(filter)) return;
+              send({ type: 'log', data: log });
             });
           });
 
           stream.on('error', (error) => {
             console.error('Stream error:', error);
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'error', message: error.message }));
-            }
+            send({ type: 'error', message: 'Log stream error' });
           });
 
           stream.on('end', () => {
             console.log('Stream ended');
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'end', message: 'Log stream ended' }));
-            }
+            send({ type: 'end', message: 'Log stream ended' });
           });
 
         } else if (data.action === 'unsubscribe') {
-          if (currentStream) {
-            currentStream.destroy();
-            activeStreams.delete(currentContainerId);
-            currentStream = null;
-            currentContainerId = null;
-          }
+          subscribeSeq++;
+          stopStream();
         }
       } catch (error) {
         console.error('WebSocket message error:', error);
-        ws.send(JSON.stringify({ type: 'error', message: error.message }));
+        send({ type: 'error', message: 'Request failed' });
       }
     });
 
     ws.on('close', () => {
       console.log('Client disconnected');
-      if (currentStream) {
-        currentStream.destroy();
-        activeStreams.delete(currentContainerId);
-      }
+      clearTimeout(authTimer);
+      clearInterval(revalidateTimer);
+      subscribeSeq++;
+      stopStream();
     });
   });
 
@@ -642,9 +729,23 @@ function createApp({ docker, userStore, jwtSecret }) {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // Docker info (auth required)
+  // Docker info (auth required). Non-admins only get counts over the
+  // containers they may see - no host-wide totals or daemon details.
   app.get('/api/docker/info', authMiddleware, async (req, res) => {
     try {
+      if (req.user.role !== 'admin') {
+        const visible = (await docker.listContainers({ all: true }))
+          .filter(c => canAccessContainer(req.user, containerIdentity(c)));
+        const running = visible.filter(c => c.State === 'running').length;
+        const paused = visible.filter(c => c.State === 'paused').length;
+        return res.json({
+          containers: visible.length,
+          containersRunning: running,
+          containersPaused: paused,
+          containersStopped: visible.length - running - paused
+        });
+      }
+
       const info = await docker.info();
       res.json({
         containers: info.Containers,

@@ -3,7 +3,7 @@ const path = require('path');
 const { createApp } = require('./app');
 const { loadConfig } = require('./config');
 const { createUserStore } = require('./userStore');
-const { ensureAdminAccount } = require('./bootstrap');
+const { ensureAdminAccount, removeUserWildcardGrants } = require('./bootstrap');
 
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'docker-log-viewer-secret-key-change-in-production';
@@ -12,6 +12,7 @@ async function main() {
   const config = loadConfig(process.env);
   const userStore = createUserStore(path.join(config.dataDir, 'users.json'));
   await ensureAdminAccount(userStore, config.admin);
+  removeUserWildcardGrants(userStore);
 
   const docker = new Docker({ socketPath: config.dockerSocket });
   const { server } = createApp({ docker, userStore, jwtSecret: JWT_SECRET });
