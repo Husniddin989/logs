@@ -40,6 +40,17 @@ function parseDuration(value, name) {
   return seconds;
 }
 
+// Which proxies may set X-Forwarded-For (Express "trust proxy" syntax). The
+// default trusts private-network hops only - the frontend nginx container and
+// a reverse proxy on the Docker host - so the client IP in audit logs is the
+// first public address and cannot be spoofed by a client-supplied header.
+function parseTrustProxy(value) {
+  if (value === undefined || value === '') return 'loopback, linklocal, uniquelocal';
+  if (value === 'false') return false;
+  if (/^\d+$/.test(value)) return Number(value);
+  return value;
+}
+
 function loadConfig(env = process.env) {
   const accessTtlSeconds = parseDuration(env.JWT_ACCESS_TTL || '15m', 'JWT_ACCESS_TTL');
   const sessionMaxAgeSeconds = parseDuration(env.SESSION_MAX_AGE || '12h', 'SESSION_MAX_AGE');
@@ -51,6 +62,8 @@ function loadConfig(env = process.env) {
     port: Number(env.PORT) || 2001,
     dockerSocket: env.DOCKER_SOCKET || '/var/run/docker.sock',
     dataDir: env.DATA_DIR || path.join(__dirname, 'data'),
+    auditLogFile: env.AUDIT_LOG_FILE || null,
+    trustProxy: parseTrustProxy(env.TRUST_PROXY),
     admin: {
       username: (env.ADMIN_USERNAME || 'admin').trim(),
       initialPassword: env.ADMIN_INITIAL_PASSWORD || null

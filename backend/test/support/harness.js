@@ -7,6 +7,7 @@ const WebSocket = require('ws');
 const { createApp } = require('../../src/app');
 const { createUserStore } = require('../../src/userStore');
 const { createTokenService } = require('../../src/tokens');
+const { createAuditLogger } = require('../../src/audit');
 const { createFakeDocker } = require('./fakeDocker');
 
 // Test credentials are generated per run so no secret-looking literal
@@ -67,7 +68,9 @@ async function startTestServer({
     revocationFile,
     now: clock.now
   });
-  const { server, wss } = createApp({ docker, userStore, tokens, ...appOptions });
+  const auditEntries = [];
+  const audit = createAuditLogger({ stream: { write: line => auditEntries.push(line) } });
+  const { server, wss } = createApp({ docker, userStore, tokens, audit, ...appOptions });
 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
@@ -101,6 +104,12 @@ async function startTestServer({
     return res.body.token;
   }
 
+  // Parsed audit entries, optionally only those for one event name
+  function auditEvents(event) {
+    const entries = auditEntries.map(line => JSON.parse(line));
+    return event ? entries.filter(e => e.event === event) : entries;
+  }
+
   function readUsers() {
     return JSON.parse(fs.readFileSync(usersFile, 'utf8')).users;
   }
@@ -126,6 +135,8 @@ async function startTestServer({
     login,
     tokenFor,
     readUsers,
+    auditEntries,
+    auditEvents,
     close
   };
 }

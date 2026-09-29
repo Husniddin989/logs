@@ -1,6 +1,7 @@
 const Docker = require('dockerode');
 const path = require('path');
 const { createApp } = require('./app');
+const { createAuditLogger } = require('./audit');
 const { loadConfig } = require('./config');
 const { createUserStore } = require('./userStore');
 const { createTokenService } = require('./tokens');
@@ -8,9 +9,21 @@ const { ensureAdminAccount, removeUserWildcardGrants } = require('./bootstrap');
 
 async function main() {
   const config = loadConfig(process.env);
+  const audit = createAuditLogger({ file: config.auditLogFile });
   const userStore = createUserStore(path.join(config.dataDir, 'users.json'));
-  await ensureAdminAccount(userStore, config.admin);
-  removeUserWildcardGrants(userStore);
+
+  const bootstrap = await ensureAdminAccount(userStore, config.admin);
+  for (const username of bootstrap.disabled) {
+    audit.log('system.account_password_disabled', { outcome: 'success', reason: 'published_default_password', target: { username } });
+  }
+  if (bootstrap.created || bootstrap.reset) {
+    audit.log('system.admin_bootstrap', {
+      outcome: 'success', target: { username: config.admin.username }, action: bootstrap.created ? 'created' : 'reset'
+    });
+  }
+  for (const username of removeUserWildcardGrants(userStore)) {
+    audit.log('system.wildcard_grant_removed', { outcome: 'success', target: { username } });
+  }
 
   const tokens = createTokenService({
     secret: config.jwt.secret,
@@ -20,7 +33,7 @@ async function main() {
   });
 
   const docker = new Docker({ socketPath: config.dockerSocket });
-  const { server } = createApp({ docker, userStore, tokens });
+  const { server } = createApp({ docker, userStore, tokens, audit, trustProxy: config.trustProxy });
 
   server.listen(config.port, () => {
     console.log(`Docker Log Viewer API running on port ${config.port}`);

@@ -2,7 +2,9 @@ const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
+const proxyaddr = require('proxy-addr');
 const WebSocket = require('ws');
+const { createAuditLogger } = require('./audit');
 const { parseDockerLogs, demuxDockerStream, framesToLogLines } = require('./dockerLogs');
 const { validatePassword, hashPassword, verifyPassword } = require('./passwords');
 const { TokenError, PASSWORD_CHANGE_SCOPE } = require('./tokens');
@@ -33,16 +35,36 @@ function containerIdentity(summary) {
   return { id: summary.Id, name: (summary.Names?.[0] || '').replace(/^\//, '') };
 }
 
+function actorOf(user) {
+  return user ? { id: user.id, username: user.username } : undefined;
+}
+
 function createApp({
   docker,
   userStore,
   tokens,
+  audit = createAuditLogger(),
+  trustProxy = 'loopback, linklocal, uniquelocal',
   wsRevalidateIntervalMs = 30 * 1000,
   wsAuthTimeoutMs = 10 * 1000
 }) {
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocket.Server({ server, maxPayload: 64 * 1024 });
+
+  // Client IPs in audit entries come from X-Forwarded-For only across trusted
+  // proxy hops (see TRUST_PROXY)
+  app.set('trust proxy', trustProxy);
+  const isTrustedProxy = app.get('trust proxy fn');
+
+  function requestContext(req) {
+    return {
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+      method: req.method,
+      path: req.originalUrl.split('?')[0]
+    };
+  }
 
   function loadUsers() {
     return userStore.load();
@@ -60,10 +82,11 @@ function createApp({
   // Verifies a token and loads its user fresh from the store, so role,
   // container grants and deletions take effect immediately. Shared by the
   // REST middleware and the WebSocket. Returns { user, claims } or
-  // { status, error, code? }. Throws only if the user store is unreadable.
+  // { status, error, reason, code? }. Throws only if the user store is
+  // unreadable.
   function authenticateToken(token, { allowPasswordChange = false } = {}) {
     if (typeof token !== 'string' || !token) {
-      return { status: 401, error: 'No token provided' };
+      return { status: 401, error: 'No token provided', reason: 'missing' };
     }
 
     let claims;
@@ -71,20 +94,29 @@ function createApp({
       claims = tokens.verify(token);
     } catch (error) {
       if (!(error instanceof TokenError)) throw error;
-      return { status: 401, error: error.reason === 'revoked' ? 'Token revoked' : 'Invalid token' };
+      return {
+        status: 401,
+        error: error.reason === 'revoked' ? 'Token revoked' : 'Invalid token',
+        reason: error.reason
+      };
     }
 
     const user = loadUsers().users.find(u => u.id === claims.sub);
     if (!user) {
-      return { status: 401, error: 'User not found' };
+      return { status: 401, error: 'User not found', reason: 'user_not_found', subject: claims.sub };
     }
     if ((user.tokenVersion || 0) !== claims.ver) {
-      return { status: 401, error: 'Token revoked' };
+      return { status: 401, error: 'Token revoked', reason: 'token_version', subject: claims.sub };
     }
 
     const passwordChangePending = claims.scope === PASSWORD_CHANGE_SCOPE || user.mustChangePassword;
     if (passwordChangePending && !allowPasswordChange) {
-      return { status: 403, error: 'Password change required', code: 'PASSWORD_CHANGE_REQUIRED' };
+      return {
+        status: 403,
+        error: 'Password change required',
+        code: 'PASSWORD_CHANGE_REQUIRED',
+        reason: 'password_change_required'
+      };
     }
 
     return { user, claims };
@@ -97,6 +129,7 @@ function createApp({
       const authHeader = req.headers.authorization;
 
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        audit.log('auth.token_rejected', { outcome: 'failure', reason: 'missing', ...requestContext(req) });
         return res.status(401).json({ error: 'No token provided' });
       }
 
@@ -109,6 +142,14 @@ function createApp({
       }
 
       if (!result.user) {
+        if (result.code !== 'PASSWORD_CHANGE_REQUIRED') {
+          audit.log('auth.token_rejected', {
+            outcome: 'failure',
+            reason: result.reason,
+            subject: result.subject,
+            ...requestContext(req)
+          });
+        }
         return res.status(result.status).json({ error: result.error, ...(result.code ? { code: result.code } : {}) });
       }
 
@@ -122,6 +163,12 @@ function createApp({
 
   function adminMiddleware(req, res, next) {
     if (req.user.role !== 'admin') {
+      audit.log('access.denied', {
+        outcome: 'denied',
+        reason: 'admin_required',
+        actor: actorOf(req.user),
+        ...requestContext(req)
+      });
       return res.status(403).json({ error: 'Admin access required' });
     }
     next();
@@ -159,10 +206,12 @@ function createApp({
 
   // Login
   app.post('/api/auth/login', async (req, res) => {
+    const ctx = requestContext(req);
     try {
-      const { username, password } = req.body;
+      const { username, password } = req.body || {};
 
       if (!username || !password) {
+        audit.log('auth.login', { outcome: 'failure', reason: 'missing_fields', username, ...ctx });
         return res.status(400).json({ error: 'Username and password required' });
       }
 
@@ -172,10 +221,15 @@ function createApp({
       // verifyPassword also burns time for unknown users and disabled passwords
       const validPassword = await verifyPassword(password, user?.password);
       if (!user || !validPassword) {
+        const reason = !user ? 'unknown_user' : (!user.password ? 'password_disabled' : 'bad_password');
+        audit.log('auth.login', { outcome: 'failure', reason, username, ...ctx });
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
       if (user.mustChangePassword) {
+        audit.log('auth.login', {
+          outcome: 'success', actor: actorOf(user), passwordChangeRequired: true, ...ctx
+        });
         return res.json({
           token: tokens.issuePasswordChange(user),
           mustChangePassword: true,
@@ -183,6 +237,7 @@ function createApp({
         });
       }
 
+      audit.log('auth.login', { outcome: 'success', actor: actorOf(user), ...ctx });
       res.json({
         token: tokens.issueSession(user),
         user: publicUser(user)
@@ -202,8 +257,12 @@ function createApp({
   // its original auth_time, so it can never outlive SESSION_MAX_AGE.
   app.post('/api/auth/refresh', authMiddleware, (req, res) => {
     if (tokens.sessionExpired(req.tokenClaims)) {
+      audit.log('auth.refresh', {
+        outcome: 'failure', reason: 'session_expired', actor: actorOf(req.user), ...requestContext(req)
+      });
       return res.status(401).json({ error: 'Session expired' });
     }
+    audit.log('auth.refresh', { outcome: 'success', actor: actorOf(req.user), ...requestContext(req) });
     res.json({
       token: tokens.issueSession(req.user, { authTime: req.tokenClaims.auth_time }),
       user: publicUser(req.user)
@@ -214,6 +273,7 @@ function createApp({
   app.post('/api/auth/logout', requireAuth({ allowPasswordChange: true }), (req, res) => {
     try {
       tokens.revoke(req.tokenClaims);
+      audit.log('auth.logout', { outcome: 'success', actor: actorOf(req.user), ...requestContext(req) });
       res.status(204).end();
     } catch (error) {
       console.error('Logout error:', error);
@@ -228,6 +288,7 @@ function createApp({
       const user = data.users.find(u => u.id === req.user.id);
       bumpTokenVersion(user);
       saveUsers(data);
+      audit.log('auth.logout_all', { outcome: 'success', actor: actorOf(req.user), ...requestContext(req) });
       res.status(204).end();
     } catch (error) {
       console.error('Logout-all error:', error);
@@ -237,19 +298,25 @@ function createApp({
 
   // Change own password. Also completes the forced change after first login.
   app.post('/api/auth/change-password', requireAuth({ allowPasswordChange: true }), async (req, res) => {
+    const ctx = requestContext(req);
+    const fail = (status, error, reason) => {
+      audit.log('auth.password_change', { outcome: 'failure', reason, actor: actorOf(req.user), ...ctx });
+      return res.status(status).json({ error });
+    };
+
     try {
       const { currentPassword, newPassword } = req.body || {};
 
       if (!(await verifyPassword(currentPassword, req.user.password))) {
-        return res.status(400).json({ error: 'Current password is incorrect' });
+        return fail(400, 'Current password is incorrect', 'bad_current_password');
       }
 
       const problem = validatePassword(newPassword, { username: req.user.username });
       if (problem) {
-        return res.status(400).json({ error: problem });
+        return fail(400, problem, 'policy');
       }
       if (newPassword === currentPassword) {
-        return res.status(400).json({ error: 'New password must differ from the current one' });
+        return fail(400, 'New password must differ from the current one', 'unchanged');
       }
 
       const data = loadUsers();
@@ -265,6 +332,7 @@ function createApp({
       bumpTokenVersion(user);
       saveUsers(data);
 
+      audit.log('auth.password_change', { outcome: 'success', actor: actorOf(user), ...ctx });
       res.json({ token: tokens.issueSession(user), user: publicUser(user) });
     } catch (error) {
       console.error('Change password error:', error);
@@ -315,6 +383,14 @@ function createApp({
       data.users.push(newUser);
       saveUsers(data);
 
+      audit.log('admin.user_create', {
+        outcome: 'success',
+        actor: actorOf(req.user),
+        target: actorOf(newUser),
+        role: newUser.role,
+        allowedContainers: newUser.allowedContainers,
+        ...requestContext(req)
+      });
       res.status(201).json(publicUser(newUser));
     } catch (error) {
       console.error('Create user error:', error);
@@ -369,6 +445,16 @@ function createApp({
         }
       }
 
+      // What changed, for the audit log (never the password itself)
+      const changes = {};
+      if (username && username !== target.username) changes.username = { from: target.username, to: username };
+      if (nextRole !== target.role) changes.role = { from: target.role, to: nextRole };
+      if (grants.value !== undefined &&
+          JSON.stringify(grants.value) !== JSON.stringify(target.allowedContainers || [])) {
+        changes.allowedContainers = { from: target.allowedContainers || [], to: grants.value };
+      }
+      if (password) changes.passwordReset = true;
+
       if (username) target.username = username;
       // A password reset or role change signs the user out everywhere
       if (password || nextRole !== target.role) {
@@ -383,6 +469,13 @@ function createApp({
 
       saveUsers(data);
 
+      audit.log('admin.user_update', {
+        outcome: 'success',
+        actor: actorOf(req.user),
+        target: actorOf(target),
+        changes,
+        ...requestContext(req)
+      });
       res.json(publicUser(target));
     } catch (error) {
       console.error('Update user error:', error);
@@ -413,6 +506,9 @@ function createApp({
       data.users.splice(userIndex, 1);
       saveUsers(data);
 
+      audit.log('admin.user_delete', {
+        outcome: 'success', actor: actorOf(req.user), target: actorOf(user), ...requestContext(req)
+      });
       res.json({ message: 'User deleted' });
     } catch (error) {
       console.error('Delete user error:', error);
@@ -430,6 +526,9 @@ function createApp({
       }
       bumpTokenVersion(target);
       saveUsers(data);
+      audit.log('admin.revoke_sessions', {
+        outcome: 'success', actor: actorOf(req.user), target: actorOf(target), ...requestContext(req)
+      });
       res.json({ message: 'Sessions revoked' });
     } catch (error) {
       console.error('Revoke sessions error:', error);
@@ -511,8 +610,25 @@ function createApp({
     try {
       const access = await authorizeContainer(req.user, req.params.id);
       if (!access.container) {
+        if (access.status !== 404) {
+          audit.log('access.denied', {
+            outcome: 'denied',
+            reason: access.status === 400 ? 'invalid_container_ref' : 'container_not_granted',
+            actor: actorOf(req.user),
+            containerRef: req.params.id,
+            ...requestContext(req)
+          });
+        }
         return res.status(access.status).json({ error: access.error });
       }
+
+      audit.log('logs.access', {
+        outcome: 'success',
+        channel: 'rest',
+        actor: actorOf(req.user),
+        container: access.container,
+        ...requestContext(req)
+      });
 
       // Use the canonical ID from here on, never the client's reference
       const container = docker.getContainer(access.container.id);
@@ -603,9 +719,16 @@ function createApp({
 
   wss.on('connection', (ws, req) => {
     console.log('Client connected');
-    let session = null; // { token, userId } once authenticated
+    let session = null; // { token, userId, username } once authenticated
     let current = null; // { stream, container } while streaming
     let subscribeSeq = 0;
+
+    const wsContext = {
+      channel: 'ws',
+      ip: proxyaddr(req, isTrustedProxy),
+      userAgent: req.headers['user-agent']
+    };
+    const sessionActor = () => (session ? { id: session.userId, username: session.username } : undefined);
 
     const send = (payload) => {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
@@ -618,7 +741,8 @@ function createApp({
       }
     };
 
-    const endSession = (message) => {
+    const endSession = (message, reason) => {
+      audit.log('ws.session_ended', { outcome: 'failure', reason, actor: sessionActor(), ...wsContext });
       stopStream();
       session = null;
       send({ type: 'auth', status: 'failed', message });
@@ -645,10 +769,13 @@ function createApp({
       }
 
       if (!result.user || result.user.id !== session.userId) {
-        endSession(result.error || 'Session is no longer valid');
+        endSession(result.error || 'Session is no longer valid', result.reason);
         return null;
       }
       if (current && !canAccessContainer(result.user, current.container)) {
+        audit.log('access.revoked', {
+          outcome: 'denied', actor: actorOf(result.user), container: current.container, ...wsContext
+        });
         stopStream();
         send({ type: 'error', code: 'ACCESS_REVOKED', message: 'Access to this container was revoked' });
       }
@@ -675,6 +802,9 @@ function createApp({
         if (data.action === 'auth') {
           const result = authenticateToken(data.token);
           if (!result.user) {
+            audit.log('ws.auth', {
+              outcome: 'failure', reason: result.reason, subject: result.subject, actor: sessionActor(), ...wsContext
+            });
             stopStream();
             session = null;
             send({ type: 'auth', status: 'failed', message: result.error });
@@ -682,10 +812,14 @@ function createApp({
           }
           // An open socket cannot be handed over to a different user
           if (session && session.userId !== result.user.id) {
-            endSession('Session user mismatch');
+            endSession('Session user mismatch', 'user_mismatch');
             return;
           }
-          session = { token: data.token, userId: result.user.id };
+          // Re-authentication with a refreshed token is routine; log first auth only
+          if (!session) {
+            audit.log('ws.auth', { outcome: 'success', actor: actorOf(result.user), ...wsContext });
+          }
+          session = { token: data.token, userId: result.user.id, username: result.user.username };
           clearTimeout(authTimer);
           send({ type: 'auth', status: 'success' });
           return;
@@ -704,6 +838,15 @@ function createApp({
 
           const access = await authorizeContainer(user, data.containerId);
           if (!access.container) {
+            if (access.status !== 404) {
+              audit.log('access.denied', {
+                outcome: 'denied',
+                reason: access.status === 400 ? 'invalid_container_ref' : 'container_not_granted',
+                actor: actorOf(user),
+                containerRef: typeof data.containerId === 'string' ? data.containerId : String(data.containerId),
+                ...wsContext
+              });
+            }
             send({ type: 'error', message: access.error });
             return;
           }
@@ -711,6 +854,7 @@ function createApp({
           stopStream();
           const seq = ++subscribeSeq;
           const { container } = access;
+          audit.log('logs.access', { outcome: 'success', actor: actorOf(user), container, ...wsContext });
           console.log(`Subscribing to container: ${container.id} (${container.name})`);
           const stream = await docker.getContainer(container.id).logs({
             follow: true,

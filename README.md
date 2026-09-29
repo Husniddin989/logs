@@ -62,6 +62,8 @@ re-initialised on the next start.
 | `SESSION_MAX_AGE` | `12h` | Absolute session length after login, refreshes included |
 | `ADMIN_USERNAME` | `admin` | Username of the bootstrap admin account |
 | `ADMIN_INITIAL_PASSWORD` | – | One-time admin password (min 12 chars), required on first start |
+| `AUDIT_LOG_FILE` | `/app/src/data/audit.log` (compose) | Append-only JSON-lines audit log; stdout only when unset |
+| `TRUST_PROXY` | private networks | Proxies allowed to set `X-Forwarded-For` (Express syntax) |
 | `FRONTEND_PORT` | `2000` | Web interface port |
 | `NODE_ENV` | `production` | Node.js environment |
 
@@ -231,6 +233,36 @@ docker-log-viewer/
 ├── .env.example
 └── README.md
 ```
+
+## Audit Log
+
+Security events are written as one JSON object per line, tagged
+`"type":"audit"`, to the backend's stdout and to `AUDIT_LOG_FILE`
+(default `/app/src/data/audit.log` in the `users-data` volume, so it survives
+container re-creation). Passwords, hashes and tokens are never logged.
+
+| Event | When |
+|-------|------|
+| `auth.login` | every login attempt: `success`, or `failure` with `unknown_user` / `bad_password` / `password_disabled` / `missing_fields` |
+| `auth.token_rejected` | a request with a missing, invalid, expired or revoked token |
+| `auth.refresh`, `auth.logout`, `auth.logout_all`, `auth.password_change` | session lifecycle |
+| `access.denied`, `access.revoked` | non-admin on an admin route, container not granted, malformed container reference, grant revoked mid-stream |
+| `logs.access` | who opened which container's logs (REST or WebSocket) |
+| `ws.auth`, `ws.session_ended` | WebSocket authentication and forced disconnects |
+| `admin.user_create`, `admin.user_update`, `admin.user_delete`, `admin.revoke_sessions` | admin actions with actor, target and the changed fields |
+| `system.*` | startup: admin bootstrap, disabled default passwords, removed `*` grants |
+
+```bash
+# Recent failed logins
+docker exec docker-log-viewer-backend sh -c "grep '\"auth.login\"' /app/src/data/audit.log | grep failure | tail -50"
+# Everything from one IP
+docker exec docker-log-viewer-backend grep '"ip":"203.0.113.9"' /app/src/data/audit.log
+```
+
+Client IPs come from `X-Forwarded-For` only across trusted hops
+(`TRUST_PROXY`, default: private networks), so a client cannot spoof them.
+The file is not rotated by the app; rotate it with logrotate (`copytruncate`
+or rename both work).
 
 ## Security Notes
 

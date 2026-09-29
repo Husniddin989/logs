@@ -13,6 +13,9 @@ services:
       - "JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env, see .env.example}"
       - JWT_ACCESS_TTL=${JWT_ACCESS_TTL:-15m}
       - SESSION_MAX_AGE=${SESSION_MAX_AGE:-12h}
+      # Audit events also go to stdout; the file survives container re-creation
+      - AUDIT_LOG_FILE=${AUDIT_LOG_FILE:-/app/src/data/audit.log}
+      - TRUST_PROXY=${TRUST_PROXY:-}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD:-}
     networks:
