@@ -6,9 +6,13 @@ import Login from './components/Login';
 import ChangePassword from './components/ChangePassword';
 import UserManagement from './components/UserManagement';
 import { getLogLevel } from './utils/logLevel';
+import { tokenExpiresAt } from './utils/token';
 import './App.css';
 
 const API_URL = process.env.REACT_APP_API_URL || '';
+// Refresh the access token this long before it expires
+const REFRESH_MARGIN_MS = 2 * 60 * 1000;
+const REFRESH_RETRY_MS = 15 * 1000;
 const getWsUrl = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/ws`;
@@ -45,6 +49,7 @@ function App() {
   const [customDateRange, setCustomDateRange] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const wsRef = useRef(null);
+  const tokenRef = useRef(null);
   const selectedContainerRef = useRef(null);
   const searchTermRef = useRef('');
 
@@ -120,11 +125,117 @@ function App() {
     return false;
   }, [handleLogout]);
 
+  // Explicit sign-out also revokes the token on the server
+  const handleSignOut = useCallback(() => {
+    const current = localStorage.getItem('token');
+    if (current) {
+      fetch(`${API_URL}/api/auth/logout`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${current}` },
+        keepalive: true
+      }).catch(() => {});
+    }
+    handleLogout();
+  }, [handleLogout]);
+
   const mustChangePassword = Boolean(user?.mustChangePassword);
+  const hasSession = Boolean(token);
+
+  // The live WebSocket re-authenticates with every new token instead of
+  // reconnecting (which would replay the last lines)
+  useEffect(() => {
+    tokenRef.current = token;
+    const ws = wsRef.current;
+    if (token && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'auth', token }));
+    }
+  }, [token]);
+
+  // Access tokens are short-lived: swap them for a fresh one shortly before
+  // they expire. Tabs share the token through localStorage, so a tab first
+  // checks whether another tab has already refreshed it.
+  useEffect(() => {
+    if (!token || mustChangePassword) return;
+
+    let timer = null;
+    let cancelled = false;
+
+    const refresh = async () => {
+      const current = localStorage.getItem('token');
+      if (!current) {
+        handleLogout();
+        return;
+      }
+      if (current !== token && tokenExpiresAt(current) - Date.now() > REFRESH_MARGIN_MS) {
+        setToken(current);
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_URL}/api/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${current}` }
+        });
+        if (cancelled) return;
+
+        if (response.ok) {
+          const data = await response.json();
+          localStorage.setItem('token', data.token);
+          localStorage.setItem('user', JSON.stringify(data.user));
+          setUser(data.user);
+          setToken(data.token);
+          return;
+        }
+
+        if (response.status === 401 || response.status === 403) {
+          // Another tab may have refreshed in the meantime
+          const latest = localStorage.getItem('token');
+          if (latest && latest !== current && tokenExpiresAt(latest) > Date.now()) {
+            setToken(latest);
+            return;
+          }
+          await handleAuthFailure(response);
+          return;
+        }
+      } catch {
+        // Network error: retry below
+      }
+      if (!cancelled) timer = setTimeout(refresh, REFRESH_RETRY_MS);
+    };
+
+    const delay = Math.max(tokenExpiresAt(token) - Date.now() - REFRESH_MARGIN_MS, 0);
+    timer = setTimeout(refresh, delay);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [token, mustChangePassword, handleLogout, handleAuthFailure]);
+
+  // Follow logins, logouts and refreshes made in other tabs
+  useEffect(() => {
+    const onStorage = (event) => {
+      if (event.key === 'token') {
+        if (event.newValue) {
+          setToken(event.newValue);
+        } else {
+          handleLogout();
+        }
+      } else if (event.key === 'user' && event.newValue) {
+        try {
+          setUser(JSON.parse(event.newValue));
+        } catch {
+          // ignore malformed values
+        }
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [handleLogout]);
 
   // Fetch containers
   const fetchContainers = useCallback(async () => {
-    if (!token) return;
+    if (!hasSession) return;
     try {
       const response = await fetch(`${API_URL}/api/containers`, {
         headers: getAuthHeaders()
@@ -135,11 +246,11 @@ function App() {
     } catch (error) {
       console.error('Failed to fetch containers:', error);
     }
-  }, [token, handleAuthFailure]);
+  }, [hasSession, handleAuthFailure]);
 
   // Fetch Docker info
   const fetchDockerInfo = useCallback(async () => {
-    if (!token) return;
+    if (!hasSession) return;
     try {
       const response = await fetch(`${API_URL}/api/docker/info`, {
         headers: getAuthHeaders()
@@ -150,17 +261,17 @@ function App() {
     } catch (error) {
       console.error('Failed to fetch Docker info:', error);
     }
-  }, [token, handleAuthFailure]);
+  }, [hasSession, handleAuthFailure]);
 
   // Initial data fetch
   useEffect(() => {
-    if (token && !mustChangePassword) {
+    if (hasSession && !mustChangePassword) {
       fetchContainers();
       fetchDockerInfo();
       const interval = setInterval(fetchContainers, 10000);
       return () => clearInterval(interval);
     }
-  }, [token, mustChangePassword, fetchContainers, fetchDockerInfo]);
+  }, [hasSession, mustChangePassword, fetchContainers, fetchDockerInfo]);
 
   // Update ref when selectedContainer changes
   useEffect(() => {
@@ -169,7 +280,7 @@ function App() {
 
   // Fetch logs by time range with pagination support
   const fetchLogsByTimeRange = useCallback(async (container, range, customRange = null, page = 1, append = false) => {
-    if (!container || range === 'live' || !token) return;
+    if (!container || range === 'live' || !hasSession) return;
 
     setIsLoading(true);
     if (!append) {
@@ -230,7 +341,7 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [token, handleAuthFailure]);
+  }, [hasSession, handleAuthFailure]);
 
   // Load more logs (pagination)
   const handleLoadMore = useCallback(() => {
@@ -251,7 +362,7 @@ function App() {
 
   // WebSocket connection for live streaming
   useEffect(() => {
-    if (!selectedContainer || timeRange !== 'live' || !token) return;
+    if (!selectedContainer || timeRange !== 'live' || !hasSession) return;
 
     let destroyed = false;
     let reconnectTimer = null;
@@ -262,9 +373,11 @@ function App() {
 
       const ws = new WebSocket(getWsUrl());
       wsRef.current = ws;
+      // Later auth replies are token refreshes and must not re-subscribe
+      let subscribed = false;
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ action: 'auth', token }));
+        ws.send(JSON.stringify({ action: 'auth', token: tokenRef.current }));
       };
 
       ws.onmessage = (event) => {
@@ -273,12 +386,15 @@ function App() {
         if (message.type === 'auth') {
           if (message.status === 'success') {
             setIsConnected(true);
-            ws.send(JSON.stringify({
-              action: 'subscribe',
-              containerId: selectedContainer.fullId,
-              filter: searchTermRef.current
-            }));
-            setIsStreaming(true);
+            if (!subscribed) {
+              subscribed = true;
+              ws.send(JSON.stringify({
+                action: 'subscribe',
+                containerId: selectedContainer.fullId,
+                filter: searchTermRef.current
+              }));
+              setIsStreaming(true);
+            }
           } else {
             console.error('WebSocket auth failed:', message.message);
             handleLogout();
@@ -336,7 +452,7 @@ function App() {
         ws.close();
       }
     };
-  }, [selectedContainer, timeRange, token]);
+  }, [selectedContainer, timeRange, hasSession, handleLogout]);
 
   // Time range o'zgarganda loglarni yuklash
   useEffect(() => {
@@ -514,7 +630,7 @@ function App() {
       <ChangePassword
         forced={mustChangePassword}
         onChanged={handlePasswordChanged}
-        onCancel={mustChangePassword ? handleLogout : () => setShowChangePassword(false)}
+        onCancel={mustChangePassword ? handleSignOut : () => setShowChangePassword(false)}
         onSessionExpired={handleLogout}
       />
     );
@@ -526,6 +642,7 @@ function App() {
       <UserManagement
         onBack={() => setShowUserManagement(false)}
         currentUser={user}
+        onSessionRevoked={handleLogout}
       />
     );
   }
@@ -561,7 +678,7 @@ function App() {
             <button className="admin-btn" onClick={() => setShowChangePassword(true)}>
               Password
             </button>
-            <button className="logout-btn" onClick={handleLogout}>
+            <button className="logout-btn" onClick={handleSignOut}>
               Logout
             </button>
           </div>

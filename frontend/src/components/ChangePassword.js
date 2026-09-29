@@ -63,7 +63,7 @@ function ChangePassword({ forced, onChanged, onCancel, onSessionExpired }) {
           <p>
             {forced
               ? 'Your current password was issued by an administrator. Set your own password to continue.'
-              : 'Enter your current password and choose a new one.'}
+              : 'Enter your current password and choose a new one. Your other sessions will be signed out.'}
           </p>
         </div>
 

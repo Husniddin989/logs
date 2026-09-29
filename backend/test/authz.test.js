@@ -80,10 +80,12 @@ describe('(a) requests without a valid token get 401', () => {
   });
 
   test('a token for a deleted user stops working', async () => {
+    const temp = { id: 'temp', username: 'temp', password: null, role: 'admin', allowedContainers: [] };
     const data = JSON.parse(fs.readFileSync(srv.usersFile, 'utf8'));
-    data.users.push({ id: 'temp', username: 'temp', password: null, role: 'admin', allowedContainers: [] });
+    data.users.push(temp);
     fs.writeFileSync(srv.usersFile, JSON.stringify(data));
-    const token = jwt.sign({ userId: 'temp', username: 'temp', role: 'admin' }, srv.jwtSecret);
+    const token = srv.tokens.issueSession(temp);
+    assert.equal((await srv.request('GET', '/api/containers', { token })).status, 200);
 
     data.users = data.users.filter(u => u.id !== 'temp');
     fs.writeFileSync(srv.usersFile, JSON.stringify(data));

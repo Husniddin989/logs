@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const WebSocket = require('ws');
 const { createApp } = require('../../src/app');
 const { createUserStore } = require('../../src/userStore');
+const { createTokenService } = require('../../src/tokens');
 const { createFakeDocker } = require('./fakeDocker');
 
 // Test credentials are generated per run so no secret-looking literal
@@ -18,7 +19,24 @@ function randomPassword() {
   return `Pw-${crypto.randomBytes(12).toString('hex')}`;
 }
 
-async function startTestServer({ users = [], containers = [], appOptions = {} } = {}) {
+// Lets tests move the server's notion of "now" forward (token expiry etc.)
+function createClock() {
+  let offsetMs = 0;
+  return {
+    now: () => Date.now() + offsetMs,
+    advance(ms) {
+      offsetMs += ms;
+    }
+  };
+}
+
+async function startTestServer({
+  users = [],
+  containers = [],
+  appOptions = {},
+  accessTtlSeconds = 15 * 60,
+  sessionMaxAgeSeconds = 12 * 60 * 60
+} = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dlv-test-'));
   const usersFile = path.join(dataDir, 'users.json');
   const passwords = {};
@@ -39,8 +57,17 @@ async function startTestServer({ users = [], containers = [], appOptions = {} } 
 
   const docker = createFakeDocker(containers);
   const jwtSecret = randomSecret();
+  const clock = createClock();
   const userStore = createUserStore(usersFile);
-  const { server, wss } = createApp({ docker, userStore, jwtSecret, ...appOptions });
+  const revocationFile = path.join(dataDir, 'revoked-tokens.json');
+  const tokens = createTokenService({
+    secret: jwtSecret,
+    accessTtlSeconds,
+    sessionMaxAgeSeconds,
+    revocationFile,
+    now: clock.now
+  });
+  const { server, wss } = createApp({ docker, userStore, tokens, ...appOptions });
 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
@@ -91,6 +118,9 @@ async function startTestServer({ users = [], containers = [], appOptions = {} } 
     dataDir,
     usersFile,
     jwtSecret,
+    tokens,
+    clock,
+    revocationFile,
     passwords,
     request,
     login,

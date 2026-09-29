@@ -11,7 +11,7 @@ const getAuthHeaders = () => {
   };
 };
 
-function UserManagement({ onBack, currentUser }) {
+function UserManagement({ onBack, currentUser, onSessionRevoked }) {
   const [users, setUsers] = useState([]);
   const [containers, setContainers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -145,6 +145,35 @@ function UserManagement({ onBack, currentUser }) {
 
       setSuccess('User deleted successfully');
       fetchUsers();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleRevokeSessions = async (user) => {
+    const isSelf = user.id === currentUser.id;
+    const prompt = isSelf
+      ? 'Sign yourself out of every session, including this one?'
+      : `Sign "${user.username}" out of every session?`;
+    if (!window.confirm(prompt)) return;
+
+    setError('');
+    setSuccess('');
+
+    try {
+      const response = await fetch(`${API_URL}/api/users/${user.id}/revoke-sessions`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to revoke sessions');
+      }
+      if (isSelf) {
+        onSessionRevoked();
+        return;
+      }
+      setSuccess(`All sessions of "${user.username}" were revoked`);
     } catch (err) {
       setError(err.message);
     }
@@ -315,6 +344,9 @@ function UserManagement({ onBack, currentUser }) {
                 <td className="actions-cell">
                   <button className="edit-btn" onClick={() => handleEdit(user)}>
                     Edit
+                  </button>
+                  <button className="edit-btn" onClick={() => handleRevokeSessions(user)}>
+                    Revoke sessions
                   </button>
                   {user.id !== currentUser.id && (
                     <button className="delete-btn" onClick={() => handleDelete(user.id)}>

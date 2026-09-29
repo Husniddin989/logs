@@ -10,7 +10,9 @@ services:
       - users-data:/app/src/data
     environment:
       - NODE_ENV=production
-      - JWT_SECRET=${JWT_SECRET:-docker-log-viewer-secret-change-me}
+      - "JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env, see .env.example}"
+      - JWT_ACCESS_TTL=${JWT_ACCESS_TTL:-15m}
+      - SESSION_MAX_AGE=${SESSION_MAX_AGE:-12h}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD:-}
     networks:

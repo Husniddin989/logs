@@ -57,7 +57,9 @@ re-initialised on the next start.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `JWT_SECRET` | `docker-log-viewer-secret-change-me` | JWT signing key (MUST change!) |
+| `JWT_SECRET` | – (required) | JWT signing key, 32+ random chars (`openssl rand -base64 48`). Changing it signs everyone out |
+| `JWT_ACCESS_TTL` | `15m` | Access token lifetime; the UI refreshes it automatically |
+| `SESSION_MAX_AGE` | `12h` | Absolute session length after login, refreshes included |
 | `ADMIN_USERNAME` | `admin` | Username of the bootstrap admin account |
 | `ADMIN_INITIAL_PASSWORD` | – | One-time admin password (min 12 chars), required on first start |
 | `FRONTEND_PORT` | `2000` | Web interface port |
@@ -118,8 +120,12 @@ services:
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
-| `/api/auth/login` | POST | No | Login, returns JWT |
+| `/api/auth/login` | POST | No | Login, returns a short-lived JWT (or a password-change-only token) |
 | `/api/auth/me` | GET | Yes | Current user info |
+| `/api/auth/refresh` | POST | Yes | New access token for the same session (until `SESSION_MAX_AGE`) |
+| `/api/auth/change-password` | POST | Yes | Change own password; signs out other sessions |
+| `/api/auth/logout` | POST | Yes | Revoke the presented token |
+| `/api/auth/logout-all` | POST | Yes | Revoke every token of the current user |
 
 ### Users (Admin only)
 
@@ -129,6 +135,7 @@ services:
 | `/api/users` | POST | Create user |
 | `/api/users/:id` | PUT | Update user |
 | `/api/users/:id` | DELETE | Delete user |
+| `/api/users/:id/revoke-sessions` | POST | Sign the user out everywhere |
 
 ### Containers
 
@@ -143,7 +150,8 @@ services:
 Connect to `/ws` for real-time log streaming:
 
 ```javascript
-// Authenticate
+// Authenticate (send again with a refreshed token to keep the stream alive;
+// the server re-checks token and container access periodically)
 ws.send(JSON.stringify({ action: 'auth', token: 'your-jwt-token' }));
 
 // Subscribe to container logs
@@ -200,7 +208,7 @@ docker-log-viewer/
 
 ## Security Notes
 
-1. **Change JWT_SECRET** - Use a strong, random key in production
+1. **JWT_SECRET** - Required, no default; weak or previously published values are refused. Tokens are HS256, 15 min, revocable (logout, password change, admin revoke)
 2. **No default credentials** - The admin is created from `ADMIN_INITIAL_PASSWORD` and must pick a new password at first login
 3. **Docker socket access** - The `:ro` mount does not make the Docker API read-only: the backend can call any Docker endpoint, so every container reference is validated and authorised server-side against the container's canonical ID/name before it reaches Docker
 4. **User data persistence** - Users are stored in a Docker volume (`users-data`)

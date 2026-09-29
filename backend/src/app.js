@@ -3,9 +3,9 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const WebSocket = require('ws');
-const jwt = require('jsonwebtoken');
 const { parseDockerLogs, demuxDockerStream, framesToLogLines } = require('./dockerLogs');
 const { validatePassword, hashPassword, verifyPassword } = require('./passwords');
+const { TokenError, PASSWORD_CHANGE_SCOPE } = require('./tokens');
 const {
   isValidContainerRef,
   canAccessContainer,
@@ -14,7 +14,10 @@ const {
   validateRole
 } = require('./access');
 
-const PASSWORD_CHANGE_SCOPE = 'password_change';
+// Invalidates every token issued to the user so far
+function bumpTokenVersion(user) {
+  user.tokenVersion = (user.tokenVersion || 0) + 1;
+}
 
 function publicUser(user) {
   return {
@@ -33,12 +36,10 @@ function containerIdentity(summary) {
 function createApp({
   docker,
   userStore,
-  jwtSecret,
+  tokens,
   wsRevalidateIntervalMs = 30 * 1000,
   wsAuthTimeoutMs = 10 * 1000
 }) {
-  const JWT_SECRET = jwtSecret;
-
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocket.Server({ server, maxPayload: 64 * 1024 });
@@ -49,23 +50,6 @@ function createApp({
 
   function saveUsers(data) {
     userStore.save(data);
-  }
-
-  function signSessionToken(user) {
-    return jwt.sign(
-      { userId: user.id, username: user.username, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-  }
-
-  // Only good for POST /api/auth/change-password
-  function signPasswordChangeToken(user) {
-    return jwt.sign(
-      { userId: user.id, username: user.username, scope: PASSWORD_CHANGE_SCOPE },
-      JWT_SECRET,
-      { expiresIn: '10m' }
-    );
   }
 
   app.use(cors());
@@ -84,14 +68,18 @@ function createApp({
 
     let claims;
     try {
-      claims = jwt.verify(token, JWT_SECRET);
+      claims = tokens.verify(token);
     } catch (error) {
-      return { status: 401, error: 'Invalid token' };
+      if (!(error instanceof TokenError)) throw error;
+      return { status: 401, error: error.reason === 'revoked' ? 'Token revoked' : 'Invalid token' };
     }
 
-    const user = loadUsers().users.find(u => u.id === claims.userId);
+    const user = loadUsers().users.find(u => u.id === claims.sub);
     if (!user) {
       return { status: 401, error: 'User not found' };
+    }
+    if ((user.tokenVersion || 0) !== claims.ver) {
+      return { status: 401, error: 'Token revoked' };
     }
 
     const passwordChangePending = claims.scope === PASSWORD_CHANGE_SCOPE || user.mustChangePassword;
@@ -189,14 +177,14 @@ function createApp({
 
       if (user.mustChangePassword) {
         return res.json({
-          token: signPasswordChangeToken(user),
+          token: tokens.issuePasswordChange(user),
           mustChangePassword: true,
           user: publicUser(user)
         });
       }
 
       res.json({
-        token: signSessionToken(user),
+        token: tokens.issueSession(user),
         user: publicUser(user)
       });
     } catch (error) {
@@ -208,6 +196,43 @@ function createApp({
   // Get current user
   app.get('/api/auth/me', requireAuth({ allowPasswordChange: true }), (req, res) => {
     res.json(publicUser(req.user));
+  });
+
+  // Exchange a still-valid access token for a fresh one. The session keeps
+  // its original auth_time, so it can never outlive SESSION_MAX_AGE.
+  app.post('/api/auth/refresh', authMiddleware, (req, res) => {
+    if (tokens.sessionExpired(req.tokenClaims)) {
+      return res.status(401).json({ error: 'Session expired' });
+    }
+    res.json({
+      token: tokens.issueSession(req.user, { authTime: req.tokenClaims.auth_time }),
+      user: publicUser(req.user)
+    });
+  });
+
+  // Revoke the presented token
+  app.post('/api/auth/logout', requireAuth({ allowPasswordChange: true }), (req, res) => {
+    try {
+      tokens.revoke(req.tokenClaims);
+      res.status(204).end();
+    } catch (error) {
+      console.error('Logout error:', error);
+      res.status(500).json({ error: 'Logout failed' });
+    }
+  });
+
+  // Revoke every token of the current user, on every device
+  app.post('/api/auth/logout-all', requireAuth({ allowPasswordChange: true }), (req, res) => {
+    try {
+      const data = loadUsers();
+      const user = data.users.find(u => u.id === req.user.id);
+      bumpTokenVersion(user);
+      saveUsers(data);
+      res.status(204).end();
+    } catch (error) {
+      console.error('Logout-all error:', error);
+      res.status(500).json({ error: 'Logout failed' });
+    }
   });
 
   // Change own password. Also completes the forced change after first login.
@@ -236,9 +261,11 @@ function createApp({
       user.password = await hashPassword(newPassword);
       user.mustChangePassword = false;
       user.passwordChangedAt = new Date().toISOString();
+      // Sign out every other session; the caller gets a fresh token below
+      bumpTokenVersion(user);
       saveUsers(data);
 
-      res.json({ token: signSessionToken(user), user: publicUser(user) });
+      res.json({ token: tokens.issueSession(user), user: publicUser(user) });
     } catch (error) {
       console.error('Change password error:', error);
       res.status(500).json({ error: 'Failed to change password' });
@@ -343,6 +370,10 @@ function createApp({
       }
 
       if (username) target.username = username;
+      // A password reset or role change signs the user out everywhere
+      if (password || nextRole !== target.role) {
+        bumpTokenVersion(target);
+      }
       if (password) {
         target.password = await hashPassword(password);
         target.mustChangePassword = true;
@@ -386,6 +417,23 @@ function createApp({
     } catch (error) {
       console.error('Delete user error:', error);
       res.status(500).json({ error: 'Failed to delete user' });
+    }
+  });
+
+  // Sign a user out of every session (e.g. a lost laptop or a leaked token)
+  app.post('/api/users/:id/revoke-sessions', authMiddleware, adminMiddleware, (req, res) => {
+    try {
+      const data = loadUsers();
+      const target = data.users.find(u => u.id === req.params.id);
+      if (!target) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      bumpTokenVersion(target);
+      saveUsers(data);
+      res.json({ message: 'Sessions revoked' });
+    } catch (error) {
+      console.error('Revoke sessions error:', error);
+      res.status(500).json({ error: 'Failed to revoke sessions' });
     }
   });
 

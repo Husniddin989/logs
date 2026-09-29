@@ -3,10 +3,8 @@ const path = require('path');
 const { createApp } = require('./app');
 const { loadConfig } = require('./config');
 const { createUserStore } = require('./userStore');
+const { createTokenService } = require('./tokens');
 const { ensureAdminAccount, removeUserWildcardGrants } = require('./bootstrap');
-
-// JWT Secret
-const JWT_SECRET = process.env.JWT_SECRET || 'docker-log-viewer-secret-key-change-in-production';
 
 async function main() {
   const config = loadConfig(process.env);
@@ -14,8 +12,15 @@ async function main() {
   await ensureAdminAccount(userStore, config.admin);
   removeUserWildcardGrants(userStore);
 
+  const tokens = createTokenService({
+    secret: config.jwt.secret,
+    accessTtlSeconds: config.jwt.accessTtlSeconds,
+    sessionMaxAgeSeconds: config.jwt.sessionMaxAgeSeconds,
+    revocationFile: path.join(config.dataDir, 'revoked-tokens.json')
+  });
+
   const docker = new Docker({ socketPath: config.dockerSocket });
-  const { server } = createApp({ docker, userStore, jwtSecret: JWT_SECRET });
+  const { server } = createApp({ docker, userStore, tokens });
 
   server.listen(config.port, () => {
     console.log(`Docker Log Viewer API running on port ${config.port}`);
