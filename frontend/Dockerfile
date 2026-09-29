@@ -7,6 +7,7 @@ RUN npm install
 
 COPY public ./public
 COPY src ./src
+COPY scripts ./scripts
 
 ARG REACT_APP_API_URL
 ARG REACT_APP_WS_URL
@@ -14,7 +15,10 @@ ARG REACT_APP_WS_URL
 ENV REACT_APP_API_URL=$REACT_APP_API_URL
 ENV REACT_APP_WS_URL=$REACT_APP_WS_URL
 
-RUN npm run build
+# Source maps would publish the original source code (sourcesContent)
+ENV GENERATE_SOURCEMAP=false
+
+RUN npm run build && npm run check-build
 
 # Production
 FROM nginx:alpine

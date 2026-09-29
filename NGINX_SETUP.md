@@ -14,6 +14,12 @@ server {
         allow all;
     }
 
+    # Source map'lar original kodni ochib beradi - hech qachon tashqariga bermang
+    location ~* \.map$ {
+        deny all;
+        return 404;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:2000;
         proxy_http_version 1.1;
