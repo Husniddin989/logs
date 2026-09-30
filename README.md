@@ -68,6 +68,10 @@ Upgrading an existing installation: follow [SECURITY.md](SECURITY.md) (new
 | `AUDIT_LOG_FILE` | `/app/src/data/audit.log` (compose) | Append-only JSON-lines audit log; stdout only when unset |
 | `TRUST_PROXY` | private networks | Proxies allowed to set `X-Forwarded-For` (Express syntax) |
 | `CORS_ORIGINS` | – (same-origin only) | Extra browser origins allowed to call the API, comma-separated |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | – (alerts off) | Initial Telegram settings; normally set in the UI (Alerts page) |
+| `ALERT_*` | see [Telegram Alerts](#telegram-alerts) | Initial check interval, thresholds, report, ignored containers (UI overrides) |
+| `ALERT_DISK_PATH` | `/host` (compose) | Path whose filesystem is measured for disk alerts (env only) |
+| `TELEGRAM_API_BASE` | api.telegram.org | Self-hosted Bot API server URL (env only, not editable in the UI) |
 | `FRONTEND_PORT` | `2000` | Web interface port |
 | `NODE_ENV` | `production` | Node.js environment |
 
@@ -220,6 +224,8 @@ docker-log-viewer/
 │   │   ├── access.js         # Container reference validation and grants
 │   │   ├── tokens.js         # JWT issue/verify/revoke
 │   │   ├── audit.js          # JSON-lines audit log
+│   │   ├── monitor.js, metrics.js, alerting.js, telegram.js   # Telegram alerts
+│   │   ├── alertSettings.js, alertService.js                  # UI-managed alert settings
 │   │   ├── config.js, bootstrap.js, passwords.js, loginThrottle.js, userStore.js
 │   │   └── data/             # Runtime data (users.json, audit.log), not in git
 │   ├── test/                 # node:test suites (npm test)
@@ -241,6 +247,52 @@ docker-log-viewer/
 ├── .env.example
 └── README.md
 ```
+
+## Telegram Alerts
+
+The backend can watch the server and every container and report to a
+Telegram chat. Admins configure it in the UI: **Alerts** button in the header
+→ bot token, chat ID, "Test xabar yuborish", check interval, thresholds and
+ignored containers, plus a live table of the current check states. Saving
+applies the settings immediately, without a restart.
+
+Settings are stored in `alert-settings.json` in the `users-data` volume
+(owner-only permissions). The bot token is never sent back to the browser —
+the UI only shows a hint like `123456789:…wxyz` — and it is never written to
+the audit log. The `TELEGRAM_*` / `ALERT_*` environment variables are only
+the initial values until the settings are first saved in the UI.
+
+Every `ALERT_INTERVAL` (default 60s) it checks:
+
+| Check | 🟡 WARN | 🔴 CRITICAL |
+|-------|---------|-------------|
+| Server CPU | ≥ 80% | ≥ 95% |
+| Server RAM (available memory, like `free -h`) | ≥ 80% | ≥ 95% |
+| Server disk (`ALERT_DISK_PATH`, host `/` in Docker) | ≥ 80% | ≥ 90% |
+| Container CPU / RAM (of its limit) | ≥ 85% | ≥ 95% |
+| Container state | paused, created, stopped with exit 0, running but restarted ≥ 3 times | exited with an error, OOM-killed, restart loop, dead, healthcheck `unhealthy` |
+| Docker API | – | not responding |
+
+Messages are sent when a check **changes level**, so a problem is announced
+once and its recovery is announced with 🟢 OK. A problem that persists is
+repeated every `ALERT_RENOTIFY` (default 30m). A problem already present at
+startup is reported immediately; healthy checks are not.
+
+A **status report** listing the server and every container (state, CPU, RAM,
+exit code) is sent at startup and every `ALERT_SUMMARY_INTERVAL` (default
+24h, `0` disables it).
+
+```
+🔴 CRITICAL — Container ustozai-app-1
+xato bilan to‘xtagan (exit code 137) — image: ustozai-app:latest
+holat: OK → CRITICAL
+host: logs.ustozaibot.uz
+```
+
+All thresholds are configurable (`ALERT_CPU_WARN`, `ALERT_DISK_CRITICAL`, ...
+see `.env.example`); `ALERT_IGNORE_CONTAINERS` excludes noisy containers and
+`ALERT_HOSTNAME` sets the server name shown in messages. In Docker the
+backend reads the host disk through the read-only `/:/host:ro` mount.
 
 ## Audit Log
 

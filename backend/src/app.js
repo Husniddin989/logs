@@ -10,6 +10,12 @@ const { parseDockerLogs, demuxDockerStream, framesToLogLines } = require('./dock
 const { validatePassword, hashPassword, verifyPassword } = require('./passwords');
 const { TokenError, PASSWORD_CHANGE_SCOPE } = require('./tokens');
 const {
+  applySettingsUpdate,
+  publicSettings,
+  validateBotToken,
+  validateChatId
+} = require('./alertSettings');
+const {
   isValidContainerRef,
   canAccessContainer,
   normalizeAllowedContainers,
@@ -48,6 +54,8 @@ function createApp({
   loginThrottle = createLoginThrottle(),
   trustProxy = 'loopback, linklocal, uniquelocal',
   corsOrigins = [],
+  // { store, service } for Telegram alerts; routes are only added when given
+  alerts = null,
   wsRevalidateIntervalMs = 30 * 1000,
   wsAuthTimeoutMs = 10 * 1000
 }) {
@@ -644,6 +652,103 @@ function createApp({
       res.status(500).json({ error: 'Failed to revoke sessions' });
     }
   });
+
+  // ================== ALERT SETTINGS (Admin only) ==================
+
+  if (alerts) {
+    const { store: alertStore, service: alertService } = alerts;
+    let lastTestAt = 0;
+
+    app.get('/api/alerts/settings', authMiddleware, adminMiddleware, (req, res) => {
+      try {
+        const { settings, source } = alertStore.load();
+        res.json({ settings: publicSettings(settings), source, status: alertService.status() });
+      } catch (error) {
+        console.error('Alert settings load error:', error);
+        res.status(500).json({ error: 'Failed to load alert settings' });
+      }
+    });
+
+    app.put('/api/alerts/settings', authMiddleware, adminMiddleware, (req, res) => {
+      try {
+        const { settings: current } = alertStore.load();
+        const result = applySettingsUpdate(current, req.body);
+        if (result.error) {
+          return res.status(400).json({ error: result.error });
+        }
+
+        alertStore.save(result.settings);
+        alertService.apply(result.settings);
+
+        // Field names only: the token value is never logged
+        audit.log('admin.alert_settings_update', {
+          outcome: 'success',
+          actor: actorOf(req.user),
+          changes: result.changes,
+          enabled: result.settings.enabled,
+          ...requestContext(req)
+        });
+        res.json({ settings: publicSettings(result.settings), source: 'saved', status: alertService.status() });
+      } catch (error) {
+        console.error('Alert settings save error:', error);
+        res.status(500).json({ error: 'Failed to save alert settings' });
+      }
+    });
+
+    // Test with the values typed in the form (not saved yet) or the saved ones
+    app.post('/api/alerts/test', authMiddleware, adminMiddleware, async (req, res) => {
+      try {
+        const now = Date.now();
+        if (now - lastTestAt < 3000) {
+          return res.status(429).json({ error: 'Biroz kuting va qayta urinib ko‘ring' });
+        }
+        lastTestAt = now;
+
+        const { settings } = alertStore.load();
+        const body = req.body || {};
+        const botToken = typeof body.botToken === 'string' && body.botToken.trim() ? body.botToken.trim() : settings.botToken;
+        const chatId = body.chatId !== undefined && String(body.chatId).trim() ? String(body.chatId).trim() : settings.chatId;
+
+        const problem = (!botToken && 'Bot token kiritilmagan') ||
+          (!chatId && 'Chat ID kiritilmagan') ||
+          validateBotToken(botToken) || validateChatId(chatId);
+        if (problem) {
+          return res.status(400).json({ error: problem });
+        }
+
+        const result = await alertService.sendTest({ botToken, chatId, hostname: settings.hostname });
+        audit.log('admin.alert_test', {
+          outcome: result.ok ? 'success' : 'failure',
+          reason: result.ok ? undefined : result.error,
+          actor: actorOf(req.user),
+          ...requestContext(req)
+        });
+        if (!result.ok) {
+          return res.status(502).json({ error: `Telegram xabarni qabul qilmadi: ${result.error}` });
+        }
+        res.json({ ok: true });
+      } catch (error) {
+        console.error('Alert test error:', error);
+        res.status(500).json({ error: 'Failed to send test message' });
+      }
+    });
+
+    // Send the full status report right now
+    app.post('/api/alerts/report', authMiddleware, adminMiddleware, async (req, res) => {
+      try {
+        const result = await alertService.sendReport();
+        if (!result.ok) return res.status(409).json({ error: result.error });
+        res.json({ ok: true });
+      } catch (error) {
+        console.error('Alert report error:', error);
+        res.status(500).json({ error: 'Failed to send report' });
+      }
+    });
+
+    app.get('/api/alerts/status', authMiddleware, adminMiddleware, (req, res) => {
+      res.json(alertService.status());
+    });
+  }
 
   // ================== CONTAINER ENDPOINTS ==================
 

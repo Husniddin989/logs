@@ -1,0 +1,169 @@
+.alert-settings {
+  overflow-y: auto;
+}
+
+.alert-body {
+  padding: 20px 30px 0;
+}
+
+.alert-section {
+  background: #1e1e2e;
+  border: 1px solid #2d2d3d;
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+
+.alert-status {
+  margin: 0 30px 30px;
+}
+
+.alert-section h2 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  color: #00d9ff;
+}
+
+.alert-section .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.alert-section label {
+  color: #aaa;
+  font-size: 13px;
+}
+
+.alert-section input[type="text"],
+.alert-section input[type="password"],
+.alert-section input[type="number"] {
+  background: #2a2a3a;
+  border: 1px solid #3d3d4d;
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: #fff;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.alert-section input:focus {
+  outline: none;
+  border-color: #00d9ff;
+}
+
+.alert-grid {
+  display: grid;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.alert-grid.two {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.alert-grid.three {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.alert-toggle {
+  display: inline-flex;
+  margin: 8px 0 4px;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 14px !important;
+  color: #fff !important;
+}
+
+.alert-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: #00d9ff;
+}
+
+.alert-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.alert-actions .cancel-btn,
+.alert-actions .submit-btn {
+  flex: 0 1 auto;
+  padding: 10px 18px;
+}
+
+.alert-actions.sticky {
+  position: sticky;
+  bottom: 0;
+  background: #1a1a2e;
+  padding: 12px 0 20px;
+  margin: 0;
+  justify-content: flex-end;
+  z-index: 5;
+}
+
+.alert-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.link-btn {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: #ff5252;
+  font-size: 12px;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.threshold-table {
+  border-collapse: collapse;
+  margin-top: 8px;
+}
+
+.threshold-table th,
+.threshold-table td {
+  padding: 6px 10px;
+  text-align: left;
+  color: #ccc;
+  font-size: 13px;
+}
+
+.threshold-table th {
+  color: #888;
+  font-weight: 500;
+}
+
+.threshold-table input[type="number"] {
+  width: 90px;
+}
+
+.alert-state {
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 12px;
+}
+
+.alert-state.on {
+  background: rgba(76, 175, 80, 0.15);
+  color: #4caf50;
+}
+
+.alert-state.off {
+  background: rgba(158, 158, 158, 0.15);
+  color: #aaa;
+}
+
+.alert-status tr.level-critical td {
+  color: #ff6b6b;
+}
+
+.alert-status tr.level-warn td {
+  color: #ffc107;
+}

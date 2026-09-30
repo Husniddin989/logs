@@ -5,6 +5,7 @@ import LogFilters from './components/LogFilters';
 import Login from './components/Login';
 import ChangePassword from './components/ChangePassword';
 import UserManagement from './components/UserManagement';
+import AlertSettings from './components/AlertSettings';
 import { getLogLevel } from './utils/logLevel';
 import { tokenExpiresAt } from './utils/token';
 import './App.css';
@@ -32,6 +33,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showAlerts, setShowAlerts] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
 
   // App state
@@ -95,6 +97,7 @@ function App() {
     setToken(null);
     setShowChangePassword(false);
     setShowUserManagement(false);
+    setShowAlerts(false);
     setContainers([]);
     setSelectedContainer(null);
     setLogsMap({});
@@ -636,6 +639,15 @@ function App() {
     );
   }
 
+  if (showAlerts && user.role === 'admin') {
+    return (
+      <AlertSettings
+        onBack={() => setShowAlerts(false)}
+        onSessionExpired={handleLogout}
+      />
+    );
+  }
+
   // Show user management panel
   if (showUserManagement) {
     return (
@@ -673,6 +685,11 @@ function App() {
             {user.role === 'admin' && (
               <button className="admin-btn" onClick={() => setShowUserManagement(true)}>
                 Users
+              </button>
+            )}
+            {user.role === 'admin' && (
+              <button className="admin-btn" onClick={() => setShowAlerts(true)}>
+                Alerts
               </button>
             )}
             <button className="admin-btn" onClick={() => setShowChangePassword(true)}>

@@ -51,6 +51,75 @@ function parseTrustProxy(value) {
   return value;
 }
 
+function parsePercent(value, fallback, name) {
+  if (value === undefined || value === '') return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0 || number > 100) {
+    throw new ConfigError(`${name} must be a percentage between 1 and 100`);
+  }
+  return number;
+}
+
+function parseList(value) {
+  return (value || '').split(',').map(item => item.trim()).filter(Boolean);
+}
+
+// Telegram alerting is off unless both TELEGRAM_BOT_TOKEN and
+// TELEGRAM_CHAT_ID are set. Setting only one of them is a mistake worth
+// failing loudly on rather than silently sending nothing.
+function loadAlertConfig(env) {
+  const botToken = env.TELEGRAM_BOT_TOKEN || '';
+  const chatId = env.TELEGRAM_CHAT_ID || '';
+
+  if (Boolean(botToken) !== Boolean(chatId)) {
+    throw new ConfigError('Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable alerts (or neither)');
+  }
+  if (botToken && !/^\d+:[A-Za-z0-9_-]{30,}$/.test(botToken)) {
+    throw new ConfigError('TELEGRAM_BOT_TOKEN does not look like a bot token (expected 123456:ABC...)');
+  }
+
+  // Optional self-hosted Bot API server (https://github.com/tdlib/telegram-bot-api)
+  const apiBase = (env.TELEGRAM_API_BASE || '').replace(/\/+$/, '') || undefined;
+  if (apiBase && !/^https?:\/\/[^\s/]+/.test(apiBase)) {
+    throw new ConfigError('TELEGRAM_API_BASE must be an http(s) URL');
+  }
+
+  const enabled = Boolean(botToken) && env.ALERT_ENABLED !== 'false';
+
+  const thresholds = {
+    cpuWarn: parsePercent(env.ALERT_CPU_WARN, 80, 'ALERT_CPU_WARN'),
+    cpuCritical: parsePercent(env.ALERT_CPU_CRITICAL, 95, 'ALERT_CPU_CRITICAL'),
+    memWarn: parsePercent(env.ALERT_MEM_WARN, 80, 'ALERT_MEM_WARN'),
+    memCritical: parsePercent(env.ALERT_MEM_CRITICAL, 95, 'ALERT_MEM_CRITICAL'),
+    diskWarn: parsePercent(env.ALERT_DISK_WARN, 80, 'ALERT_DISK_WARN'),
+    diskCritical: parsePercent(env.ALERT_DISK_CRITICAL, 90, 'ALERT_DISK_CRITICAL'),
+    containerCpuWarn: parsePercent(env.ALERT_CONTAINER_CPU_WARN, 85, 'ALERT_CONTAINER_CPU_WARN'),
+    containerCpuCritical: parsePercent(env.ALERT_CONTAINER_CPU_CRITICAL, 95, 'ALERT_CONTAINER_CPU_CRITICAL'),
+    containerMemWarn: parsePercent(env.ALERT_CONTAINER_MEM_WARN, 85, 'ALERT_CONTAINER_MEM_WARN'),
+    containerMemCritical: parsePercent(env.ALERT_CONTAINER_MEM_CRITICAL, 95, 'ALERT_CONTAINER_MEM_CRITICAL'),
+    restartWarn: Number(env.ALERT_RESTART_WARN) > 0 ? Number(env.ALERT_RESTART_WARN) : 3
+  };
+
+  for (const metric of ['cpu', 'mem', 'disk', 'containerCpu', 'containerMem']) {
+    if (thresholds[`${metric}Warn`] >= thresholds[`${metric}Critical`]) {
+      throw new ConfigError(`Alert threshold for ${metric}: warn must be lower than critical`);
+    }
+  }
+
+  return {
+    enabled,
+    telegram: { botToken, chatId, apiBase },
+    intervalSeconds: parseDuration(env.ALERT_INTERVAL || '60s', 'ALERT_INTERVAL'),
+    renotifySeconds: parseDuration(env.ALERT_RENOTIFY || '30m', 'ALERT_RENOTIFY'),
+    // "0" turns the periodic status report off
+    summarySeconds: env.ALERT_SUMMARY_INTERVAL === '0' ? 0 : parseDuration(env.ALERT_SUMMARY_INTERVAL || '24h', 'ALERT_SUMMARY_INTERVAL'),
+    diskPath: env.ALERT_DISK_PATH || '/',
+    hostname: (env.ALERT_HOSTNAME || '').trim() || null,
+    ignoreContainers: parseList(env.ALERT_IGNORE_CONTAINERS),
+    thresholds
+  };
+}
+
 function loadConfig(env = process.env) {
   const accessTtlSeconds = parseDuration(env.JWT_ACCESS_TTL || '15m', 'JWT_ACCESS_TTL');
   const sessionMaxAgeSeconds = parseDuration(env.SESSION_MAX_AGE || '12h', 'SESSION_MAX_AGE');
@@ -76,8 +145,9 @@ function loadConfig(env = process.env) {
       secret: validateJwtSecret(env.JWT_SECRET),
       accessTtlSeconds,
       sessionMaxAgeSeconds
-    }
+    },
+    alerts: loadAlertConfig(env)
   };
 }
 
-module.exports = { loadConfig, validateJwtSecret, parseDuration, ConfigError };
+module.exports = { loadConfig, loadAlertConfig, validateJwtSecret, parseDuration, ConfigError };

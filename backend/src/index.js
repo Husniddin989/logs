@@ -6,6 +6,8 @@ const { loadConfig } = require('./config');
 const { createUserStore } = require('./userStore');
 const { createTokenService } = require('./tokens');
 const { ensureAdminAccount, removeUserWildcardGrants } = require('./bootstrap');
+const { createAlertSettingsStore, defaultsFromConfig } = require('./alertSettings');
+const { createAlertService } = require('./alertService');
 
 async function main() {
   const config = loadConfig(process.env);
@@ -33,16 +35,31 @@ async function main() {
   });
 
   const docker = new Docker({ socketPath: config.dockerSocket });
+
+  // Alert settings are edited in the admin UI; env values are only defaults
+  const alertStore = createAlertSettingsStore(
+    path.join(config.dataDir, 'alert-settings.json'),
+    defaultsFromConfig(config.alerts)
+  );
+  const alertService = createAlertService({
+    docker,
+    diskPath: config.alerts.diskPath,
+    apiBase: config.alerts.telegram.apiBase
+  });
+
   const { server } = createApp({
     docker, userStore, tokens, audit,
     trustProxy: config.trustProxy,
-    corsOrigins: config.corsOrigins
+    corsOrigins: config.corsOrigins,
+    alerts: { store: alertStore, service: alertService }
   });
 
   server.listen(config.port, () => {
     console.log(`Docker Log Viewer API running on port ${config.port}`);
     console.log(`WebSocket server ready for connections`);
   });
+
+  alertService.apply(alertStore.load().settings, { announce: true });
 }
 
 main().catch(error => {
