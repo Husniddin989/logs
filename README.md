@@ -293,13 +293,13 @@ Every alert is rendered from a template that admins edit in the UI
 message. The default:
 
 ```
-🔴 CRITICAL — Container ustozai-app-1
-server name: ustozai-prod
+🔴 CRITICAL — Container myapp-web-1
+server name: prod-server
 ip: 203.0.113.10
 cpu: 37.2%
 ram: 21.1% (13.3 GB / 62.7 GB)
 joy: 64.0% (120.4 GB / 196.7 GB, bo‘sh: 67.6 GB)
-status: xato bilan to‘xtagan (exit code 137) — image: ustozai-app:latest
+status: xato bilan to‘xtagan (exit code 137) — image: myapp-web:latest
 timedown: 2026-10-01 14:05:12
 timeup: —
 ```
@@ -339,9 +339,9 @@ The backend must be able to reach the database:
   ```yaml
   services:
     backend:
-      networks: [log-viewer-network, ustozai_default]
+      networks: [log-viewer-network, myapp_default]
   networks:
-    ustozai_default:
+    myapp_default:
       external: true
   ```
 
