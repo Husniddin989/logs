@@ -5,6 +5,8 @@ container'iga proxy qiladi. HSTS va server banner faqat shu qatlamda
 sozlanadi (container nginx'i xavfsizlik headerlarini o'zi ham qo'shadi, lekin
 HSTS TLS tugaydigan joyda bo'lishi shart).
 
+Quyidagi misollarda `logs.example.com` o'rniga o'z domeningizni yozing.
+
 ## To'liq nginx config (HTTPS + WebSocket + xavfsizlik headerlari)
 
 `/etc/nginx/sites-available/logs`:
@@ -14,7 +16,7 @@ HSTS TLS tugaydigan joyda bo'lishi shart).
 #   server_tokens off;
 
 server {
-    server_name logs.ustozaibot.uz;
+    server_name logs.example.com;
 
     # Certbot uchun
     location /.well-known/acme-challenge/ {
@@ -49,15 +51,15 @@ server {
     }
 
     listen 443 ssl;
-    ssl_certificate /etc/letsencrypt/live/logs.ustozaibot.uz/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/logs.ustozaibot.uz/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/logs.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/logs.example.com/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 }
 
 # HTTP -> HTTPS
 server {
     listen 80;
-    server_name logs.ustozaibot.uz;
+    server_name logs.example.com;
     return 301 https://$host$request_uri;
 }
 ```
@@ -84,7 +86,7 @@ systemctl reload nginx
 ## Tekshirish
 
 ```bash
-B=https://logs.ustozaibot.uz
+B=https://logs.example.com
 curl -s -D - -o /dev/null "$B/" | grep -iE 'strict-transport|content-security|x-frame|x-content-type|referrer-policy'
-curl -s -o /dev/null -w 'HTTP->HTTPS: %{http_code}\n' "http://logs.ustozaibot.uz/"
+curl -s -o /dev/null -w 'HTTP->HTTPS: %{http_code}\n' "http://logs.example.com/"
 ```

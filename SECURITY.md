@@ -2,7 +2,7 @@
 
 Bu hujjat audit topilmalari (default admin paroli, ochiq source map, zaif
 server-side avtorizatsiya, default JWT secret) yopilgan versiyani productionga
-(`logs.ustozaibot.uz`) chiqarish va eski zaifliklar orqali kirilgan-kirilmaganini
+(masalan `logs.example.com`) chiqarish va eski zaifliklar orqali kirilgan-kirilmaganini
 tekshirish uchun. Buyruqlar serverda, loyiha katalogida bajariladi.
 
 > Muhim: eski versiyada admin paroli, JWT secret va butun frontend kodi
@@ -119,10 +119,10 @@ docker exec docker-log-viewer-backend sh -c \
 ## 6. Zanjirni qayta test qilish
 
 Audit ko'rsatgan zanjir: source map -> credential -> JWT -> API -> logs -> WebSocket.
-Har bir halqa yopilganini tekshiring (`B=https://logs.ustozaibot.uz`):
+Har bir halqa yopilganini tekshiring (`B=https://logs.example.com`):
 
 ```bash
-B=https://logs.ustozaibot.uz
+B=https://logs.example.com
 JS=$(curl -s $B/ | grep -oE 'static/js/main\.[a-f0-9]+\.js' | head -1)
 curl -s -o /dev/null -w 'source map: %{http_code}\n' "$B/$JS.map"                 # 404
 curl -s "$B/$JS" | grep -c admin123                                               # 0

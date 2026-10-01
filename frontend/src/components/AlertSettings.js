@@ -449,7 +449,7 @@ function AlertSettings({ onBack, onSessionExpired }) {
                 type="text"
                 value={form.hostname}
                 onChange={(e) => update('hostname', e.target.value)}
-                placeholder="logs.ustozaibot.uz"
+                placeholder="logs.example.com"
                 maxLength={100}
               />
             </div>
