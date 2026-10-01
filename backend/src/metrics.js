@@ -137,6 +137,7 @@ async function collectContainers(docker, { logger = console } = {}) {
       shortId: summary.Id.slice(0, 12),
       name: (summary.Names?.[0] || '').replace(/^\//, '') || 'unknown',
       image: summary.Image,
+      labels: summary.Labels || {},
       state: summary.State,
       status: summary.Status,
       health: null,

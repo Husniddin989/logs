@@ -515,6 +515,42 @@ describe('monitor', () => {
     assert.equal(snapshots[0].dockerAvailable, true);
   });
 
+  test('GitLab Runner job containers and name patterns are left out', async () => {
+    const runnerName = 'runner-arwqbwzgd-project-67149786-concurrent-0-5e3fa1c4aad0716a-predefined';
+    const all = [
+      container(),
+      container({ name: 'gitlab-runner' }),
+      container({ name: runnerName, state: 'exited', exitCode: 0 }),
+      container({ name: 'build-helper', labels: { 'com.gitlab.gitlab-runner.managed': 'true' } }),
+      container({ name: 'preview-123' })
+    ];
+    const snapshotWith = options => createMonitor({
+      docker: {},
+      hostCollector: { collect: async () => null },
+      alerter: { run: async () => ({}) },
+      collect: async () => all,
+      logger: silent,
+      ...options
+    }).snapshot();
+
+    const byDefault = await snapshotWith({ ignoreContainers: ['preview-*'] });
+    assert.deepEqual(byDefault.containers.map(c => c.name), ['web', 'gitlab-runner']);
+    assert.deepEqual(byDefault.ignoredContainers, [runnerName, 'build-helper', 'preview-123']);
+
+    const runnersWatched = await snapshotWith({ ignoreCiRunners: false });
+    assert.equal(runnersWatched.containers.length, 5);
+  });
+
+  test('a container that becomes ignored is dropped without a "removed" message', async () => {
+    const notifier = recordingNotifier();
+    const alerter = createAlerter({ notifier });
+    const stopped = container({ name: 'runner-x-project-1-concurrent-0-abc', state: 'exited', exitCode: 0 });
+    await alerter.run({ containers: [stopped] });
+    assert.equal(notifier.messages.length, 1);
+    await alerter.run({ containers: [], ignoredContainers: [stopped.name] });
+    assert.equal(notifier.messages.length, 1);
+  });
+
   test('a Docker failure yields dockerAvailable: false instead of throwing', async () => {
     const monitor = createMonitor({
       docker: {},

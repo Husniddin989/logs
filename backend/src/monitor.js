@@ -1,5 +1,6 @@
 const { collectContainers } = require('./metrics');
 const { probeService } = require('./services');
+const { createContainerFilter } = require('./containerFilter');
 
 // Periodically collects a snapshot and hands it to the alerter. One tick at
 // a time: if a tick is slow (Docker stats can take seconds), the next one is
@@ -15,6 +16,8 @@ function createMonitor({
   // an admin merely changed settings
   announceOnStart = true,
   ignoreContainers = [],
+  // GitLab Runner job containers live for one CI job: never alert on them
+  ignoreCiRunners = true,
   // Postgres / Redis servers to probe on every tick
   services = [],
   probe = probeService,
@@ -22,7 +25,7 @@ function createMonitor({
   logger = console,
   timers = { setInterval, clearInterval, setTimeout, clearTimeout }
 }) {
-  const ignored = new Set(ignoreContainers);
+  const isIgnored = createContainerFilter({ ignoreContainers, ignoreCiRunners });
   let running = false;
   let tickTimer = null;
   let summaryTimer = null;
@@ -40,9 +43,12 @@ function createMonitor({
       }),
       Promise.all(probed.map(service => probe(service)))
     ]);
+    const all = containers || [];
     return {
       host,
-      containers: containers ? containers.filter(c => !ignored.has(c.name)) : [],
+      containers: all.filter(c => !isIgnored(c)),
+      // Lets the alerter drop what it knew about them without a "removed" message
+      ignoredContainers: all.filter(isIgnored).map(c => c.name),
       dockerAvailable: containers !== null,
       services: serviceResults
     };

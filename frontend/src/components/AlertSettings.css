@@ -333,3 +333,15 @@
 .service-result.level-critical {
   color: #ff6b6b;
 }
+
+.ignore-pattern {
+  display: flex;
+  gap: 10px;
+  margin: 8px 0 12px;
+  max-width: 480px;
+}
+
+.ignore-pattern .cancel-btn {
+  flex: 0 0 auto;
+  padding: 8px 16px;
+}

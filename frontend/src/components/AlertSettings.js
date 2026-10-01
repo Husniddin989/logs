@@ -83,6 +83,7 @@ function formFromSettings(settings) {
     renotifySeconds: toDurationInput(settings.renotifySeconds),
     summarySeconds: toDurationInput(settings.summarySeconds),
     ignoreContainers: settings.ignoreContainers || [],
+    ignoreCiRunners: settings.ignoreCiRunners !== false,
     thresholds: { ...settings.thresholds }
   };
 }
@@ -147,6 +148,7 @@ function AlertSettings({ onBack, onSessionExpired }) {
   const [preview, setPreview] = useState(null);
   const [previewError, setPreviewError] = useState('');
   const [serviceResults, setServiceResults] = useState({});
+  const [ignorePattern, setIgnorePattern] = useState('');
   const templateRef = useRef(null);
 
   const request = useCallback(async (method, url, body) => {
@@ -248,6 +250,15 @@ function AlertSettings({ onBack, onSessionExpired }) {
     }
   };
 
+  const addIgnorePattern = () => {
+    const entry = ignorePattern.trim();
+    if (!entry) return;
+    setForm(prev => (prev.ignoreContainers.includes(entry)
+      ? prev
+      : { ...prev, ignoreContainers: [...prev.ignoreContainers, entry] }));
+    setIgnorePattern('');
+  };
+
   const addService = (type) => {
     setForm(prev => ({
       ...prev,
@@ -316,6 +327,7 @@ function AlertSettings({ onBack, onSessionExpired }) {
         renotifySeconds: form.renotifySeconds,
         summarySeconds: form.summarySeconds,
         ignoreContainers: form.ignoreContainers,
+        ignoreCiRunners: form.ignoreCiRunners,
         thresholds
       };
       // An empty token field means "keep the saved token"
@@ -704,6 +716,27 @@ function AlertSettings({ onBack, onSessionExpired }) {
         <section className="alert-section">
           <h2>E‘tiborsiz containerlar</h2>
           <p className="form-hint">Belgilangan containerlar haqida alert yuborilmaydi.</p>
+          <label className="alert-toggle">
+            <input
+              type="checkbox"
+              checked={form.ignoreCiRunners}
+              onChange={(e) => update('ignoreCiRunners', e.target.checked)}
+            />
+            <span>CI runner job containerlarini e‘tiborsiz qoldirish (GitLab Runner: runner-…-project-…-concurrent-…)</span>
+          </label>
+          <div className="ignore-pattern">
+            <input
+              type="text"
+              value={ignorePattern}
+              onChange={(e) => setIgnorePattern(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addIgnorePattern(); } }}
+              placeholder="nom yoki pattern, masalan preview-*"
+              maxLength={128}
+            />
+            <button type="button" className="cancel-btn" onClick={addIgnorePattern} disabled={!ignorePattern.trim()}>
+              Qo‘shish
+            </button>
+          </div>
           <div className="um-container-list">
             {containerNames.length === 0 && <p className="form-hint">Containerlar topilmadi.</p>}
             {containerNames.map(name => (
