@@ -13,8 +13,10 @@ const {
   applySettingsUpdate,
   publicSettings,
   validateBotToken,
-  validateChatId
+  validateChatId,
+  normalizeService
 } = require('./alertSettings');
+const { serviceCheck, DEFAULT_THRESHOLDS, DEFAULT_TEMPLATE, TEMPLATE_PLACEHOLDERS } = require('./alerting');
 const {
   isValidContainerRef,
   canAccessContainer,
@@ -658,11 +660,30 @@ function createApp({
   if (alerts) {
     const { store: alertStore, service: alertService } = alerts;
     let lastTestAt = 0;
+    let lastServiceTestAt = 0;
+
+    // Saved settings with the message fields typed in the form (not saved
+    // yet), validated like a save. Returns { settings } or { error }.
+    const withMessageFields = (body = {}) => {
+      const { settings } = alertStore.load();
+      const fields = {};
+      for (const key of ['hostname', 'serverIp', 'timezone', 'messageTemplate']) {
+        if (body[key] !== undefined) fields[key] = body[key];
+      }
+      const result = applySettingsUpdate(settings, fields);
+      return result.error ? { error: result.error } : { settings: result.settings };
+    };
 
     app.get('/api/alerts/settings', authMiddleware, adminMiddleware, (req, res) => {
       try {
         const { settings, source } = alertStore.load();
-        res.json({ settings: publicSettings(settings), source, status: alertService.status() });
+        res.json({
+          settings: publicSettings(settings),
+          source,
+          status: alertService.status(),
+          // For the message format editor
+          template: { default: DEFAULT_TEMPLATE, placeholders: TEMPLATE_PLACEHOLDERS }
+        });
       } catch (error) {
         console.error('Alert settings load error:', error);
         res.status(500).json({ error: 'Failed to load alert settings' });
@@ -704,8 +725,11 @@ function createApp({
         }
         lastTestAt = now;
 
-        const { settings } = alertStore.load();
         const body = req.body || {};
+        const { settings, error } = withMessageFields(body);
+        if (error) {
+          return res.status(400).json({ error });
+        }
         const botToken = typeof body.botToken === 'string' && body.botToken.trim() ? body.botToken.trim() : settings.botToken;
         const chatId = body.chatId !== undefined && String(body.chatId).trim() ? String(body.chatId).trim() : settings.chatId;
 
@@ -716,7 +740,7 @@ function createApp({
           return res.status(400).json({ error: problem });
         }
 
-        const result = await alertService.sendTest({ botToken, chatId, hostname: settings.hostname });
+        const result = await alertService.sendTest({ botToken, chatId, settings });
         audit.log('admin.alert_test', {
           outcome: result.ok ? 'success' : 'failure',
           reason: result.ok ? undefined : result.error,
@@ -747,6 +771,53 @@ function createApp({
 
     app.get('/api/alerts/status', authMiddleware, adminMiddleware, (req, res) => {
       res.json(alertService.status());
+    });
+
+    // How alerts will look with the template typed in the form
+    app.post('/api/alerts/preview', authMiddleware, adminMiddleware, async (req, res) => {
+      try {
+        const { settings, error } = withMessageFields(req.body || {});
+        if (error) {
+          return res.status(400).json({ error });
+        }
+        res.json(await alertService.preview(settings));
+      } catch (error) {
+        console.error('Alert preview error:', error);
+        res.status(500).json({ error: 'Failed to render preview' });
+      }
+    });
+
+    // Probe one Postgres / Redis entry from the form. An empty password uses
+    // the one saved for the same entry.
+    app.post('/api/alerts/services/test', authMiddleware, adminMiddleware, async (req, res) => {
+      try {
+        const now = Date.now();
+        if (now - lastServiceTestAt < 1000) {
+          return res.status(429).json({ error: 'Biroz kuting va qayta urinib ko‘ring' });
+        }
+        lastServiceTestAt = now;
+
+        const { settings } = alertStore.load();
+        let service;
+        try {
+          service = normalizeService(req.body, settings.services || []);
+        } catch (error) {
+          return res.status(400).json({ error: error.message });
+        }
+
+        const result = await alertService.testService(service);
+        const check = serviceCheck(result, { ...DEFAULT_THRESHOLDS, ...settings.thresholds });
+        audit.log('admin.alert_service_test', {
+          outcome: result.ok ? 'success' : 'failure',
+          service: { type: service.type, target: result.target },
+          actor: actorOf(req.user),
+          ...requestContext(req)
+        });
+        res.json({ ok: result.ok, level: check.level, detail: check.detail });
+      } catch (error) {
+        console.error('Alert service test error:', error);
+        res.status(500).json({ error: 'Failed to test service' });
+      }
     });
   }
 

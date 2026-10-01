@@ -12,7 +12,11 @@ const {
   evaluate,
   containerStateCheck,
   summaryMessage,
-  DEFAULT_THRESHOLDS
+  renderTemplate,
+  validateTemplate,
+  formatTime,
+  DEFAULT_THRESHOLDS,
+  DEFAULT_TEMPLATE
 } = require('../src/alerting');
 const { createMonitor } = require('../src/monitor');
 const { loadAlertConfig, ConfigError } = require('../src/config');
@@ -259,11 +263,14 @@ describe('evaluate', () => {
   });
 });
 
+// 2026-10-01 14:00:00 in Tashkent (UTC+5)
+const T0 = Date.UTC(2026, 9, 1, 9, 0, 0);
+
 describe('alerter', () => {
-  function setup(renotifyMs = 30 * 60 * 1000) {
-    let time = 0;
+  function setup(renotifyMs = 30 * 60 * 1000, options = {}) {
+    let time = T0;
     const notifier = recordingNotifier();
-    const alerter = createAlerter({ notifier, renotifyMs, now: () => time });
+    const alerter = createAlerter({ notifier, renotifyMs, now: () => time, ...options });
     return { notifier, alerter, advance: ms => { time += ms; } };
   }
 
@@ -281,7 +288,8 @@ describe('alerter', () => {
     assert.equal(notifier.messages.length, 1);
     assert.match(notifier.messages[0], /CRITICAL/);
     assert.match(notifier.messages[0], /exit code 1/);
-    assert.match(notifier.messages[0], /OK → CRITICAL/);
+    assert.match(notifier.messages[0], /timedown: 2026-10-01 14:00:00/);
+    assert.match(notifier.messages[0], /timeup: —/);
 
     // Same state within the renotify window: silent
     advance(5 * 60 * 1000);
@@ -298,6 +306,86 @@ describe('alerter', () => {
     assert.equal(notifier.messages.length, 3);
     assert.match(notifier.messages[2], /🟢/);
     assert.match(notifier.messages[2], /tiklandi/);
+    // The outage still started at the first failure, not at the reminder
+    assert.match(notifier.messages[2], /timedown: 2026-10-01 14:00:00/);
+    assert.match(notifier.messages[2], /timeup: 2026-10-01 14:11:00/);
+  });
+
+  test('every alert carries server name, ip, cpu, ram, disk, status and times', async () => {
+    const { notifier, alerter } = setup(undefined, { message: { serverIp: '203.0.113.10' } });
+    await alerter.run({ host: host({ cpu: 12, mem: 97, disk: 40 }) });
+    const [text] = notifier.messages;
+    const lines = text.split('\n');
+    assert.equal(lines[0], '🔴 <b>CRITICAL</b> — Server RAM');
+    assert.deepEqual(lines.slice(1).map(line => line.split(':')[0]), [
+      'server name', 'ip', 'cpu', 'ram', 'joy', 'status', 'timedown', 'timeup'
+    ]);
+    assert.match(text, /server name: prod-1/);
+    assert.match(text, /ip: 203\.0\.113\.10/);
+    assert.match(text, /cpu: 12\.0%/);
+    assert.match(text, /ram: 97\.0% \(7\.2 GB \/ 7\.5 GB\)/);
+    assert.match(text, /joy: 40\.0%/);
+  });
+
+  test('a custom template is used, its values are escaped and its tags kept', async () => {
+    const { notifier, alerter } = setup(undefined, {
+      message: { template: '<b>{level}</b> {title} @ {server} [{change}] {duration}', timeZone: 'UTC' }
+    });
+    await alerter.run({ containers: [container({ name: '<evil>' })] });
+    await alerter.run({ containers: [container({ name: '<evil>', state: 'dead' })] });
+    assert.equal(notifier.messages[0], '<b>CRITICAL</b> Container &lt;evil&gt; @ server [OK → CRITICAL] 0s');
+  });
+
+  test('WARN -> CRITICAL -> OK reports one outage from the first WARN', async () => {
+    const { notifier, alerter, advance } = setup(undefined, { message: { template: '{level} {timedown} {timeup} {duration}' } });
+    await alerter.run({ host: host({ disk: 85 }) });
+    advance(60 * 1000);
+    await alerter.run({ host: host({ disk: 95 }) });
+    advance(4 * 60 * 1000 + 5000);
+    await alerter.run({ host: host({ disk: 20 }) });
+    assert.deepEqual(notifier.messages, [
+      'WARN 2026-10-01 14:00:00 — 0s',
+      'CRITICAL 2026-10-01 14:00:00 — 1m 0s',
+      'OK 2026-10-01 14:00:00 2026-10-01 14:05:05 5m 5s'
+    ]);
+  });
+
+  test('a stopped container is down since Docker says it stopped, and up since it started', async () => {
+    const { notifier, alerter, advance } = setup(undefined, { message: { template: '{timedown} | {timeup}' } });
+    await alerter.run({ containers: [container()] });
+    const stoppedAt = new Date(T0 - 3 * 60 * 1000).toISOString();
+    await alerter.run({ containers: [container({ state: 'exited', exitCode: 1, finishedAt: stoppedAt })] });
+    advance(10 * 60 * 1000);
+    const startedAt = new Date(T0 + 8 * 60 * 1000).toISOString();
+    await alerter.run({ containers: [container({ startedAt })] });
+    assert.deepEqual(notifier.messages, [
+      '2026-10-01 13:57:00 | —',
+      '2026-10-01 13:57:00 | 2026-10-01 14:08:00'
+    ]);
+  });
+
+  test('container CPU and RAM are not alerted unless turned on', async () => {
+    const busy = { containers: [container({ cpuPercent: 150, memory: { used: 990, limit: 1000, percent: 99 } })] };
+    const off = setup();
+    await off.alerter.run(busy);
+    assert.equal(off.notifier.messages.length, 0);
+
+    const on = setup(undefined, { checks: { containerResources: true } });
+    await on.alerter.run(busy);
+    assert.equal(on.notifier.messages.length, 2);
+    assert.match(on.notifier.messages.join('\n'), /Container web CPU/);
+  });
+
+  test('turning a check group off drops its pending problems silently', async () => {
+    const state = new Map();
+    const first = setup(undefined, { state, checks: { containerResources: true } });
+    await first.alerter.run({ containers: [container({ cpuPercent: 99 })] });
+    assert.equal(first.notifier.messages.length, 1);
+
+    const second = setup(undefined, { state });
+    await second.alerter.run({ containers: [container({ cpuPercent: 99 })] });
+    assert.equal(second.notifier.messages.length, 0);
+    assert.equal(state.has('container.web.cpu'), false);
   });
 
   test('warn escalating to critical sends both steps', async () => {
@@ -318,7 +406,7 @@ describe('alerter', () => {
   });
 
   test('stopping a container does not produce a fake CPU "recovered" message', async () => {
-    const { notifier, alerter } = setup();
+    const { notifier, alerter } = setup(undefined, { checks: { containerResources: true } });
     await alerter.run({ containers: [container({ cpuPercent: 99 })] });
     notifier.messages.length = 0;
     await alerter.run({ containers: [container({ state: 'exited', exitCode: 1, cpuPercent: null, memory: null })] });
@@ -372,6 +460,33 @@ describe('alerter', () => {
     assert.match(text, /🟢 <b>web<\/b>/);
     assert.match(text, /🔴 <b>db<\/b>.*exit 1/);
     assert.ok(text.startsWith('🔴'), 'report icon reflects the worst check');
+    assert.doesNotMatch(text, /CPU 5\.0%/, 'container CPU is left out while its alerts are off');
+  });
+});
+
+describe('message template', () => {
+  test('the default has the requested lines', () => {
+    assert.match(DEFAULT_TEMPLATE, /server name: \{server\}\nip: \{ip\}\ncpu: \{cpu\}\nram: \{ram\}\njoy: \{disk\}\nstatus: \{status\}\ntimedown: \{timedown\}\ntimeup: \{timeup\}/);
+    assert.equal(validateTemplate(DEFAULT_TEMPLATE), null);
+  });
+
+  test('text typed in the template is escaped except the allowed tags', () => {
+    assert.equal(renderTemplate('<b>{title}</b> a<b & <script>', { title: 'x' }), '<b>x</b> a&lt;b &amp; &lt;script&gt;');
+    assert.equal(renderTemplate('{unknown} {title}', { title: '<t>' }), '{unknown} &lt;t&gt;');
+  });
+
+  test('typos and broken tags are rejected before they can lose alerts', () => {
+    assert.match(validateTemplate('{servr}'), /Noma’lum.*\{servr\}/);
+    assert.match(validateTemplate('<b>{title}'), /yopilmagan/);
+    assert.match(validateTemplate('<b>{title}</i>'), /juft emas/);
+    assert.match(validateTemplate('   '), /bo‘sh/);
+    assert.match(validateTemplate('x'.repeat(2001)), /2000/);
+  });
+
+  test('times are shown in the configured time zone', () => {
+    assert.equal(formatTime(T0, 'Asia/Tashkent'), '2026-10-01 14:00:00');
+    assert.equal(formatTime(T0, 'UTC'), '2026-10-01 09:00:00');
+    assert.equal(formatTime(null), '—');
   });
 });
 

@@ -225,6 +225,7 @@ docker-log-viewer/
 │   │   ├── tokens.js         # JWT issue/verify/revoke
 │   │   ├── audit.js          # JSON-lines audit log
 │   │   ├── monitor.js, metrics.js, alerting.js, telegram.js   # Telegram alerts
+│   │   ├── services.js                                        # Postgres / Redis probes
 │   │   ├── alertSettings.js, alertService.js                  # UI-managed alert settings
 │   │   ├── config.js, bootstrap.js, passwords.js, loginThrottle.js, userStore.js
 │   │   └── data/             # Runtime data (users.json, audit.log), not in git
@@ -252,8 +253,9 @@ docker-log-viewer/
 
 The backend can watch the server and every container and report to a
 Telegram chat. Admins configure it in the UI: **Alerts** button in the header
-→ bot token, chat ID, "Test xabar yuborish", check interval, thresholds and
-ignored containers, plus a live table of the current check states. Saving
+→ bot token, chat ID, server name / IP, message format, which checks to run,
+Postgres / Redis servers, "Test xabar yuborish", check interval, thresholds
+and ignored containers, plus a live table of the current check states. Saving
 applies the settings immediately, without a restart.
 
 Settings are stored in `alert-settings.json` in the `users-data` volume
@@ -269,30 +271,89 @@ Every `ALERT_INTERVAL` (default 60s) it checks:
 | Server CPU | ≥ 80% | ≥ 95% |
 | Server RAM (available memory, like `free -h`) | ≥ 80% | ≥ 95% |
 | Server disk (`ALERT_DISK_PATH`, host `/` in Docker) | ≥ 80% | ≥ 90% |
-| Container CPU / RAM (of its limit) | ≥ 85% | ≥ 95% |
 | Container state | paused, created, stopped with exit 0, running but restarted ≥ 3 times | exited with an error, OOM-killed, restart loop, dead, healthcheck `unhealthy` |
+| Postgres | connections ≥ 80% of `max_connections` | cannot connect / log in / query |
+| Redis | memory ≥ 80% of `maxmemory` (when set) | cannot connect / `AUTH` / `PING` |
 | Docker API | – | not responding |
+| Container CPU / RAM (of its limit) — **off by default** | ≥ 85% | ≥ 95% |
+
+Each group can be switched on or off in the UI (**Nimalar haqida alert
+yuborilsin**). Container CPU/RAM is off by default: busy app containers cross
+any fixed limit all the time and drown the real alerts.
 
 Messages are sent when a check **changes level**, so a problem is announced
 once and its recovery is announced with 🟢 OK. A problem that persists is
 repeated every `ALERT_RENOTIFY` (default 30m). A problem already present at
 startup is reported immediately; healthy checks are not.
 
-A **status report** listing the server and every container (state, CPU, RAM,
-exit code) is sent at startup and every `ALERT_SUMMARY_INTERVAL` (default
-24h, `0` disables it).
+### Message format
+
+Every alert is rendered from a template that admins edit in the UI
+(**Xabar ko‘rinishi**), with a live preview of a "down" and a "recovered"
+message. The default:
 
 ```
 🔴 CRITICAL — Container ustozai-app-1
-xato bilan to‘xtagan (exit code 137) — image: ustozai-app:latest
-holat: OK → CRITICAL
-host: logs.ustozaibot.uz
+server name: ustozai-prod
+ip: 203.0.113.10
+cpu: 37.2%
+ram: 21.1% (13.3 GB / 62.7 GB)
+joy: 64.0% (120.4 GB / 196.7 GB, bo‘sh: 67.6 GB)
+status: xato bilan to‘xtagan (exit code 137) — image: ustozai-app:latest
+timedown: 2026-10-01 14:05:12
+timeup: —
 ```
 
-All thresholds are configurable (`ALERT_CPU_WARN`, `ALERT_DISK_CRITICAL`, ...
-see `.env.example`); `ALERT_IGNORE_CONTAINERS` excludes noisy containers and
-`ALERT_HOSTNAME` sets the server name shown in messages. In Docker the
-backend reads the host disk through the read-only `/:/host:ro` mount.
+and on recovery `status: tiklandi: …` and `timeup:` with the time it came
+back. `timedown` is when the outage started (for a stopped container, the
+time Docker says it stopped) and stays the same through WARN → CRITICAL steps
+and reminders. Placeholders: `{icon} {level} {title} {server} {ip} {cpu}
+{ram} {disk} {status} {timedown} {timeup} {duration} {change} {detail}`;
+`<b> <i> <u> <s> <code>` work as Telegram formatting. A template with an
+unknown placeholder or unbalanced tags is rejected on save, so a typo can
+never make Telegram drop the alerts. Server IP (`ALERT_SERVER_IP`) and time
+zone (`ALERT_TIMEZONE`, default `Asia/Tashkent`) are set next to the server
+name — the public IP cannot be detected from inside a container.
+
+### Postgres and Redis
+
+Add servers under **Postgres / Redis** in the UI (host, port, user, password,
+database / SSL for Postgres) and check each one with **Tekshirish** before
+saving. On every check the backend connects, runs `SELECT` on
+`pg_stat_activity` (Postgres) or `AUTH` + `PING` + `INFO` (Redis) and
+disconnects. Passwords are stored in `alert-settings.json` like the bot token
+and never sent back to the browser — leave the field empty to keep the saved
+one. A read-only Postgres user is enough:
+
+```sql
+CREATE ROLE monitoring LOGIN PASSWORD '...' IN ROLE pg_monitor;
+```
+
+The backend must be able to reach the database:
+
+- the database publishes its port on the host → host `host.docker.internal`
+  (mapped to the host by `docker-compose.yml`) or the server IP;
+- otherwise attach the backend to the database's Docker network and use the
+  container name as host:
+
+  ```yaml
+  services:
+    backend:
+      networks: [log-viewer-network, ustozai_default]
+  networks:
+    ustozai_default:
+      external: true
+  ```
+
+A **status report** listing the server, Postgres / Redis and every container
+(state, exit code) is sent at startup and every `ALERT_SUMMARY_INTERVAL`
+(default 24h, `0` disables it).
+
+All thresholds are configurable (`ALERT_CPU_WARN`, `ALERT_DISK_CRITICAL`,
+`ALERT_SERVICE_WARN`, ... see `.env.example`); `ALERT_IGNORE_CONTAINERS`
+excludes noisy containers and `ALERT_HOSTNAME` sets the server name shown in
+messages. In Docker the backend reads the host disk through the read-only
+`/:/host:ro` mount.
 
 ## Audit Log
 

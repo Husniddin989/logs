@@ -17,6 +17,7 @@ const { loadAlertConfig } = require('../src/config');
 
 // Built at runtime so no token-shaped literal is committed
 const TOKEN = `987654321:${'Bx'.repeat(18)}`;
+const DB_PASSWORD = `db-${require('crypto').randomBytes(8).toString('hex')}`;
 const OTHER_TOKEN = `123123123:${'Zq'.repeat(18)}`;
 const silent = { log() {}, error() {}, warn() {} };
 
@@ -85,11 +86,74 @@ describe('alert settings helpers', () => {
       [{ thresholds: { restartWarn: 0 } }, /restartWarn/],
       [{ ignoreContainers: ['../etc'] }, /container nomi/],
       [{ hostname: 'x'.repeat(101) }, /100 belgi/],
+      [{ timezone: 'Mars/Olympus' }, /Vaqt zonasi/],
+      [{ messageTemplate: '{servername}' }, /Noma’lum/],
+      [{ messageTemplate: '<b>{title}' }, /yopilmagan/],
+      [{ checks: { serverCpu: 'no' } }, /checks\.serverCpu/],
+      [{ services: [{ type: 'mysql', host: 'db' }] }, /postgres yoki redis/],
+      [{ services: [{ type: 'postgres', host: '' }] }, /host kiritilmagan/],
+      [{ services: [{ type: 'redis', host: 'a b' }] }, /host noto‘g‘ri/],
+      [{ services: [{ type: 'redis', host: 'redis', port: 70000 }] }, /port/],
+      [{ services: new Array(21).fill({ type: 'redis', host: 'r' }) }, /20 ta/],
       [[], /Invalid settings/]
     ];
     for (const [body, pattern] of cases) {
       assert.match(applySettingsUpdate(base, body).error || '', pattern, JSON.stringify(body));
     }
+  });
+
+  test('container CPU/RAM alerts are off by default and the message format has the requested fields', () => {
+    assert.equal(base.checks.containerResources, false);
+    assert.equal(base.checks.containerState, true);
+    assert.equal(base.timezone, 'Asia/Tashkent');
+    for (const field of ['server name', 'ip', 'cpu', 'ram', 'joy', 'status', 'timedown', 'timeup']) {
+      assert.match(base.messageTemplate, new RegExp(`^${field}: `, 'm'));
+    }
+    const { settings } = applySettingsUpdate(base, {
+      checks: { containerResources: true, serverCpu: false },
+      serverIp: '203.0.113.10',
+      timezone: 'Europe/Moscow',
+      messageTemplate: '{icon} {title}\r\n{status}'
+    });
+    assert.equal(settings.checks.containerResources, true);
+    assert.equal(settings.checks.serverCpu, false);
+    assert.equal(settings.serverIp, '203.0.113.10');
+    assert.equal(settings.timezone, 'Europe/Moscow');
+    assert.equal(settings.messageTemplate, '{icon} {title}\n{status}');
+  });
+
+  test('database passwords are kept on save and never part of the public view', () => {
+    const first = applySettingsUpdate(base, {
+      services: [
+        { type: 'postgres', name: 'main', host: 'postgres', user: 'app', password: DB_PASSWORD, database: 'app' },
+        { type: 'redis', name: 'cache', host: 'redis' }
+      ]
+    });
+    assert.equal(first.error, undefined);
+    const [pg, redis] = first.settings.services;
+    assert.equal(pg.port, 5432);
+    assert.equal(redis.port, 6379);
+    assert.equal(pg.password, DB_PASSWORD);
+    assert.match(pg.id, /^[0-9a-f]{12}$/);
+    assert.deepEqual(first.changes, ['services']);
+
+    const view = publicSettings(first.settings);
+    assert.equal(JSON.stringify(view).includes(DB_PASSWORD), false);
+    assert.equal(view.services[0].hasPassword, true);
+    assert.equal(view.services[1].hasPassword, false);
+
+    // The UI sends the entries back without passwords: the saved one stays
+    const second = applySettingsUpdate(first.settings, { services: view.services.map(({ hasPassword, ...s }) => ({ ...s, name: 'renamed' })) });
+    assert.equal(second.settings.services[0].password, DB_PASSWORD);
+    assert.equal(second.settings.services[0].id, pg.id);
+
+    // A forged id cannot pick up another entry's password twice
+    const copied = applySettingsUpdate(first.settings, { services: [{ ...view.services[0] }, { ...view.services[0] }] });
+    assert.equal(copied.settings.services[1].password, '');
+    assert.notEqual(copied.settings.services[1].id, pg.id);
+
+    const cleared = applySettingsUpdate(first.settings, { services: [{ ...view.services[0], clearPassword: true }] });
+    assert.equal(cleared.settings.services[0].password, '');
   });
 
   test('durations accept 60s / 15m / 12h, and 0 disables the report', () => {
@@ -152,6 +216,7 @@ describe('alert settings API', () => {
   let service;
   let factory;
   let timers;
+  const probed = [];
 
   before(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dlv-alerts-api-'));
@@ -162,6 +227,11 @@ describe('alert settings API', () => {
       docker: createFakeDocker([]),
       createNotifier: factory,
       logger: silent,
+      createCollector: () => ({ collect: async () => null }),
+      probe: async svc => {
+        probed.push(svc);
+        return { id: svc.id, type: svc.type, name: svc.name, target: `${svc.host}:${svc.port}`, ok: true, latencyMs: 1, connections: 3, maxConnections: 100, sizeBytes: 0 };
+      },
       monitorOptions: { timers, collect: async () => [] }
     });
     srv = await startTestServer({
@@ -186,7 +256,9 @@ describe('alert settings API', () => {
       ['PUT', '/api/alerts/settings'],
       ['POST', '/api/alerts/test'],
       ['POST', '/api/alerts/report'],
-      ['GET', '/api/alerts/status']
+      ['GET', '/api/alerts/status'],
+      ['POST', '/api/alerts/preview'],
+      ['POST', '/api/alerts/services/test']
     ];
     const aliceToken = await srv.tokenFor('alice');
     for (const [method, url] of routes) {
@@ -251,8 +323,43 @@ describe('alert settings API', () => {
     assert.equal(used.botToken, OTHER_TOKEN);
     assert.equal(used.chatId, '@my_channel');
     assert.match(used.messages[0], /Test xabari/);
+    assert.match(used.messages[0], /server name: prod-1/, 'the test shows an example alert in the configured format');
 
     const tooSoon = await srv.request('POST', '/api/alerts/test', { token, body: {} });
+    assert.equal(tooSoon.status, 429);
+  });
+
+  test('the preview renders the typed template with the server values', async () => {
+    const token = await srv.tokenFor('admin');
+    const res = await srv.request('POST', '/api/alerts/preview', {
+      token, body: { messageTemplate: '{level} {title} on {server} ({ip}) {timeup}', hostname: 'prod-9', serverIp: '198.51.100.7' }
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.down, 'CRITICAL Container example-app on prod-9 (198.51.100.7) —');
+    assert.match(res.body.up, /^OK Container example-app on prod-9 \(198\.51\.100\.7\) \d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
+
+    const bad = await srv.request('POST', '/api/alerts/preview', { token, body: { messageTemplate: '{nope}' } });
+    assert.equal(bad.status, 400);
+  });
+
+  test('a database entry can be tested with its saved password', async () => {
+    const token = await srv.tokenFor('admin');
+    const saved = await srv.request('PUT', '/api/alerts/settings', {
+      token, body: { services: [{ type: 'postgres', name: 'main', host: 'db', user: 'app', password: DB_PASSWORD }] }
+    });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(JSON.stringify(saved.body).includes(DB_PASSWORD), false);
+    const [entry] = saved.body.settings.services;
+
+    const res = await srv.request('POST', '/api/alerts/services/test', { token, body: entry });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.ok, true);
+    assert.match(res.body.detail, /ulanishlar: 3\/100/);
+    assert.equal(probed.at(-1).password, DB_PASSWORD);
+    assert.equal(JSON.stringify(srv.auditEntries).includes(DB_PASSWORD), false);
+    assert.equal(srv.auditEvents('admin.alert_service_test').at(-1).outcome, 'success');
+
+    const tooSoon = await srv.request('POST', '/api/alerts/services/test', { token, body: entry });
     assert.equal(tooSoon.status, 429);
   });
 
