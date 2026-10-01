@@ -86,6 +86,15 @@ function loadAlertConfig(env) {
 
   const enabled = Boolean(botToken) && env.ALERT_ENABLED !== 'false';
 
+  const timezone = (env.ALERT_TIMEZONE || '').trim() || null;
+  if (timezone) {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: timezone });
+    } catch {
+      throw new ConfigError('ALERT_TIMEZONE must be an IANA time zone such as Asia/Tashkent');
+    }
+  }
+
   const thresholds = {
     cpuWarn: parsePercent(env.ALERT_CPU_WARN, 80, 'ALERT_CPU_WARN'),
     cpuCritical: parsePercent(env.ALERT_CPU_CRITICAL, 95, 'ALERT_CPU_CRITICAL'),
@@ -97,10 +106,12 @@ function loadAlertConfig(env) {
     containerCpuCritical: parsePercent(env.ALERT_CONTAINER_CPU_CRITICAL, 95, 'ALERT_CONTAINER_CPU_CRITICAL'),
     containerMemWarn: parsePercent(env.ALERT_CONTAINER_MEM_WARN, 85, 'ALERT_CONTAINER_MEM_WARN'),
     containerMemCritical: parsePercent(env.ALERT_CONTAINER_MEM_CRITICAL, 95, 'ALERT_CONTAINER_MEM_CRITICAL'),
-    restartWarn: Number(env.ALERT_RESTART_WARN) > 0 ? Number(env.ALERT_RESTART_WARN) : 3
+    restartWarn: Number(env.ALERT_RESTART_WARN) > 0 ? Number(env.ALERT_RESTART_WARN) : 3,
+    serviceWarn: parsePercent(env.ALERT_SERVICE_WARN, 80, 'ALERT_SERVICE_WARN'),
+    serviceCritical: parsePercent(env.ALERT_SERVICE_CRITICAL, 95, 'ALERT_SERVICE_CRITICAL')
   };
 
-  for (const metric of ['cpu', 'mem', 'disk', 'containerCpu', 'containerMem']) {
+  for (const metric of ['cpu', 'mem', 'disk', 'containerCpu', 'containerMem', 'service']) {
     if (thresholds[`${metric}Warn`] >= thresholds[`${metric}Critical`]) {
       throw new ConfigError(`Alert threshold for ${metric}: warn must be lower than critical`);
     }
@@ -115,6 +126,10 @@ function loadAlertConfig(env) {
     summarySeconds: env.ALERT_SUMMARY_INTERVAL === '0' ? 0 : parseDuration(env.ALERT_SUMMARY_INTERVAL || '24h', 'ALERT_SUMMARY_INTERVAL'),
     diskPath: env.ALERT_DISK_PATH || '/',
     hostname: (env.ALERT_HOSTNAME || '').trim() || null,
+    serverIp: (env.ALERT_SERVER_IP || '').trim(),
+    timezone,
+    // Container CPU/RAM alerts are off unless asked for
+    containerResources: env.ALERT_CONTAINER_RESOURCES === 'true',
     ignoreContainers: parseList(env.ALERT_IGNORE_CONTAINERS),
     thresholds
   };

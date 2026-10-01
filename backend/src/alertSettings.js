@@ -1,8 +1,17 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { parseDuration } = require('./config');
 const { isValidContainerRef } = require('./access');
-const { DEFAULT_THRESHOLDS } = require('./alerting');
+const {
+  DEFAULT_THRESHOLDS,
+  DEFAULT_CHECKS,
+  DEFAULT_TEMPLATE,
+  DEFAULT_TIMEZONE,
+  validateTemplate,
+  isValidTimeZone
+} = require('./alerting');
+const { DEFAULT_PORTS } = require('./services');
 
 const BOT_TOKEN_PATTERN = /^\d+:[A-Za-z0-9_-]{30,}$/;
 // Numeric chat/group/channel id, or a public channel username
@@ -10,15 +19,23 @@ const CHAT_ID_PATTERN = /^(-?\d{1,20}|@[A-Za-z0-9_]{5,32})$/;
 
 const PERCENT_KEYS = [
   'cpuWarn', 'cpuCritical', 'memWarn', 'memCritical', 'diskWarn', 'diskCritical',
-  'containerCpuWarn', 'containerCpuCritical', 'containerMemWarn', 'containerMemCritical'
+  'containerCpuWarn', 'containerCpuCritical', 'containerMemWarn', 'containerMemCritical',
+  'serviceWarn', 'serviceCritical'
 ];
 const THRESHOLD_PAIRS = [
   ['cpuWarn', 'cpuCritical', 'Server CPU'],
   ['memWarn', 'memCritical', 'Server RAM'],
   ['diskWarn', 'diskCritical', 'Server disk'],
   ['containerCpuWarn', 'containerCpuCritical', 'Container CPU'],
-  ['containerMemWarn', 'containerMemCritical', 'Container RAM']
+  ['containerMemWarn', 'containerMemCritical', 'Container RAM'],
+  ['serviceWarn', 'serviceCritical', 'Postgres / Redis']
 ];
+
+const MAX_SERVICES = 20;
+const SERVICE_TYPES = Object.keys(DEFAULT_PORTS);
+// Hostname, IPv4 or IPv6 address
+const HOST_PATTERN = /^[A-Za-z0-9._:[\]-]{1,253}$/;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
 // Initial values come from the environment until an admin saves settings in
 // the UI; from then on the saved file is the source of truth.
@@ -28,10 +45,17 @@ function defaultsFromConfig(alerts) {
     botToken: alerts.telegram.botToken || '',
     chatId: alerts.telegram.chatId || '',
     hostname: alerts.hostname || '',
+    serverIp: alerts.serverIp || '',
+    timezone: alerts.timezone || DEFAULT_TIMEZONE,
+    messageTemplate: DEFAULT_TEMPLATE,
     intervalSeconds: alerts.intervalSeconds,
     renotifySeconds: alerts.renotifySeconds,
     summarySeconds: alerts.summarySeconds,
     ignoreContainers: alerts.ignoreContainers,
+    checks: { ...DEFAULT_CHECKS, containerResources: Boolean(alerts.containerResources) },
+    // Postgres / Redis servers to probe: { id, type, name, host, port, user,
+    // password, database, ssl, enabled }
+    services: [],
     thresholds: { ...DEFAULT_THRESHOLDS, ...alerts.thresholds }
   };
 }
@@ -53,6 +77,7 @@ function createAlertSettingsStore(file, defaults) {
       settings: {
         ...structuredClone(defaults),
         ...saved,
+        checks: { ...defaults.checks, ...(saved.checks || {}) },
         thresholds: { ...defaults.thresholds, ...(saved.thresholds || {}) }
       },
       source: 'saved'
@@ -77,9 +102,15 @@ function tokenHint(token) {
   return `${botId}:…${secret.slice(-4)}`;
 }
 
+// Database passwords are never sent to the browser either
 function publicSettings(settings) {
   const { botToken, ...rest } = settings;
-  return { ...rest, hasBotToken: Boolean(botToken), botTokenHint: tokenHint(botToken) };
+  return {
+    ...rest,
+    services: (settings.services || []).map(({ password, ...service }) => ({ ...service, hasPassword: Boolean(password) })),
+    hasBotToken: Boolean(botToken),
+    botTokenHint: tokenHint(botToken)
+  };
 }
 
 function isSendable(settings) {
@@ -106,6 +137,51 @@ function durationSeconds(value, name, { min, max, allowZero = false }) {
     throw new Error(`${name}: ${min} soniyadan ${max} soniyagacha bo‘lishi kerak`);
   }
   return seconds;
+}
+
+function shortText(value, label, max, { required = false } = {}) {
+  const text = value === undefined || value === null ? '' : String(value).trim();
+  if (required && !text) throw new Error(`${label} kiritilmagan`);
+  if (text.length > max || CONTROL_CHARS.test(text)) throw new Error(`${label} ${max} belgidan oshmasligi kerak`);
+  return text;
+}
+
+// One Postgres / Redis entry from the UI. An empty password keeps the one
+// saved for the same id, like the bot token.
+function normalizeService(input, saved = []) {
+  if (!input || typeof input !== 'object') throw new Error('Noto‘g‘ri servis');
+  const type = String(input.type || '');
+  if (!SERVICE_TYPES.includes(type)) throw new Error(`Servis turi ${SERVICE_TYPES.join(' yoki ')} bo‘lishi kerak`);
+
+  const existing = saved.find(service => service.id === input.id);
+  const id = existing ? existing.id : crypto.randomBytes(6).toString('hex');
+
+  const name = shortText(input.name, 'Servis nomi', 50) || type;
+  const host = shortText(input.host, `${name}: host`, 253, { required: true });
+  if (!HOST_PATTERN.test(host)) throw new Error(`${name}: host noto‘g‘ri (masalan postgres, 10.0.0.5)`);
+
+  const port = input.port === undefined || input.port === '' ? DEFAULT_PORTS[type] : Number(input.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`${name}: port 1-65535 bo‘lishi kerak`);
+
+  let password = existing?.password || '';
+  if (input.clearPassword === true) password = '';
+  else if (typeof input.password === 'string' && input.password !== '') {
+    if (input.password.length > 500) throw new Error(`${name}: parol juda uzun`);
+    password = input.password;
+  }
+
+  return {
+    id,
+    type,
+    name,
+    host,
+    port,
+    user: shortText(input.user, `${name}: foydalanuvchi`, 100),
+    password,
+    database: type === 'postgres' ? shortText(input.database, `${name}: database`, 100) : '',
+    ssl: type === 'postgres' && input.ssl === true,
+    enabled: input.enabled !== false
+  };
 }
 
 // Applies a partial update from the admin UI to the current settings.
@@ -149,6 +225,45 @@ function applySettingsUpdate(current, body) {
         throw new Error('Server nomi 100 belgidan oshmasligi kerak');
       }
       next.hostname = hostname;
+    }
+
+    if (body.serverIp !== undefined) {
+      next.serverIp = shortText(body.serverIp, 'Server IP', 100);
+    }
+
+    if (body.timezone !== undefined) {
+      const timezone = String(body.timezone).trim() || DEFAULT_TIMEZONE;
+      if (!isValidTimeZone(timezone)) throw new Error('Vaqt zonasi noto‘g‘ri (masalan Asia/Tashkent)');
+      next.timezone = timezone;
+    }
+
+    if (body.messageTemplate !== undefined) {
+      const template = String(body.messageTemplate).replace(/\r\n/g, '\n');
+      const problem = validateTemplate(template);
+      if (problem) throw new Error(problem);
+      next.messageTemplate = template;
+    }
+
+    if (body.checks !== undefined) {
+      if (!body.checks || typeof body.checks !== 'object') throw new Error('checks must be an object');
+      for (const key of Object.keys(DEFAULT_CHECKS)) {
+        if (body.checks[key] === undefined) continue;
+        if (typeof body.checks[key] !== 'boolean') throw new Error(`checks.${key} must be true or false`);
+        next.checks[key] = body.checks[key];
+      }
+    }
+
+    if (body.services !== undefined) {
+      if (!Array.isArray(body.services) || body.services.length > MAX_SERVICES) {
+        throw new Error(`Postgres/Redis ro‘yxati ko‘pi bilan ${MAX_SERVICES} ta bo‘lishi mumkin`);
+      }
+      // Each saved entry (and its password) can be claimed by one row only
+      let unclaimed = [...(current.services || [])];
+      next.services = body.services.map(service => {
+        const normalized = normalizeService(service, unclaimed);
+        unclaimed = unclaimed.filter(saved => saved.id !== normalized.id);
+        return normalized;
+      });
     }
 
     if (body.intervalSeconds !== undefined) {
@@ -214,5 +329,6 @@ module.exports = {
   isSendable,
   tokenHint,
   validateBotToken,
-  validateChatId
+  validateChatId,
+  normalizeService
 };

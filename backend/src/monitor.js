@@ -1,4 +1,5 @@
 const { collectContainers } = require('./metrics');
+const { probeService } = require('./services');
 
 // Periodically collects a snapshot and hands it to the alerter. One tick at
 // a time: if a tick is slow (Docker stats can take seconds), the next one is
@@ -14,6 +15,9 @@ function createMonitor({
   // an admin merely changed settings
   announceOnStart = true,
   ignoreContainers = [],
+  // Postgres / Redis servers to probe on every tick
+  services = [],
+  probe = probeService,
   collect = collectContainers,
   logger = console,
   timers = { setInterval, clearInterval, setTimeout, clearTimeout }
@@ -25,18 +29,22 @@ function createMonitor({
   let warmupTimer = null;
   let busy = false;
 
+  const probed = services.filter(service => service.enabled !== false);
+
   async function snapshot() {
-    const [host, containers] = await Promise.all([
+    const [host, containers, serviceResults] = await Promise.all([
       hostCollector.collect(),
       collect(docker, { logger }).catch(error => {
         logger.error(`[monitor] cannot list containers: ${error.message}`);
         return null;
-      })
+      }),
+      Promise.all(probed.map(service => probe(service)))
     ]);
     return {
       host,
       containers: containers ? containers.filter(c => !ignored.has(c.name)) : [],
-      dockerAvailable: containers !== null
+      dockerAvailable: containers !== null,
+      services: serviceResults
     };
   }
 

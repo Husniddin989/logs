@@ -11,6 +11,9 @@ services:
       # Read-only view of the host filesystem so disk alerts measure the
       # server's disk, not the container's own layer
       - /:/host:ro
+    # Lets Postgres / Redis alerts reach ports published on the Docker host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - NODE_ENV=production
       - "JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env, see .env.example}"
@@ -28,6 +31,9 @@ services:
       - TELEGRAM_API_BASE=${TELEGRAM_API_BASE:-}
       - ALERT_ENABLED=${ALERT_ENABLED:-}
       - ALERT_HOSTNAME=${ALERT_HOSTNAME:-}
+      - ALERT_SERVER_IP=${ALERT_SERVER_IP:-}
+      - ALERT_TIMEZONE=${ALERT_TIMEZONE:-}
+      - ALERT_CONTAINER_RESOURCES=${ALERT_CONTAINER_RESOURCES:-}
       - ALERT_DISK_PATH=${ALERT_DISK_PATH:-/host}
       - ALERT_INTERVAL=${ALERT_INTERVAL:-60s}
       - ALERT_RENOTIFY=${ALERT_RENOTIFY:-30m}
@@ -44,6 +50,8 @@ services:
       - ALERT_CONTAINER_MEM_WARN=${ALERT_CONTAINER_MEM_WARN:-}
       - ALERT_CONTAINER_MEM_CRITICAL=${ALERT_CONTAINER_MEM_CRITICAL:-}
       - ALERT_RESTART_WARN=${ALERT_RESTART_WARN:-}
+      - ALERT_SERVICE_WARN=${ALERT_SERVICE_WARN:-}
+      - ALERT_SERVICE_CRITICAL=${ALERT_SERVICE_CRITICAL:-}
     networks:
       - log-viewer-network
 
