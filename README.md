@@ -12,6 +12,8 @@ Real-time Docker container log viewer with user authentication and access contro
 - Log level filtering (Error, Warning, Info, Debug)
 - Full-text search in logs
 - Container stats monitoring (CPU, RAM, Uptime, Size)
+- Admin container actions: start, stop, restart, delete (password re-entry required)
+- Telegram alerts for the server, containers, Postgres and Redis
 - Dark theme UI
 
 ## Quick Start
@@ -72,6 +74,8 @@ Upgrading an existing installation: follow [SECURITY.md](SECURITY.md) (new
 | `ALERT_*` | see [Telegram Alerts](#telegram-alerts) | Initial check interval, thresholds, report, ignored containers (UI overrides) |
 | `ALERT_DISK_PATH` | `/host` (compose) | Path whose filesystem is measured for disk alerts (env only) |
 | `TELEGRAM_API_BASE` | api.telegram.org | Self-hosted Bot API server URL (env only, not editable in the UI) |
+| `CONTAINER_ACTIONS_ENABLED` | `true` | Start / stop / restart / delete buttons for admins; `false` removes them server-side |
+| `CONTAINER_ACTIONS_PROTECTED` | – | Containers admins can never act on, comma-separated names or patterns (`postgres-*`) |
 | `FRONTEND_PORT` | `2000` | Web interface port |
 | `NODE_ENV` | `production` | Node.js environment |
 
@@ -136,6 +140,7 @@ services:
 | `/api/auth/change-password` | POST | Yes | Change own password; signs out other sessions |
 | `/api/auth/logout` | POST | Yes | Revoke the presented token |
 | `/api/auth/logout-all` | POST | Yes | Revoke every token of the current user |
+| `/api/auth/elevate` | POST | Admin | Re-enter the password; returns a 5-minute action token for container actions |
 
 ### Users (Admin only)
 
@@ -153,6 +158,8 @@ services:
 |----------|--------|-------------|
 | `/api/containers` | GET | List containers (filtered by access) |
 | `/api/containers/:id/logs` | GET | Get container logs |
+| `/api/containers/:id/actions` | POST | Admin + `X-Action-Token`: `{ "action": "start" \| "stop" \| "restart" \| "remove", "confirm": "<name>" }` (confirm only for remove) |
+| `/api/container-actions` | GET | Admin: whether container actions are enabled |
 | `/api/docker/info` | GET | Docker system info |
 
 ### WebSocket
@@ -359,6 +366,34 @@ by default; `ALERT_IGNORE_CI_RUNNERS=false` or the UI checkbox brings them
 back. The runner's own container (e.g. `gitlab-runner`) is still watched. In Docker the backend reads the host disk through the read-only
 `/:/host:ro` mount.
 
+## Container Actions
+
+Admins get **Start / Stop / Restart / Delete** buttons next to the selected
+container. Because these change production, they are guarded more strictly
+than reading logs:
+
+- **Server-side, admin only.** The container is resolved to its full ID
+  before anything happens (no name/prefix confusion), and the admin's role
+  and session are re-checked right before the Docker call.
+- **Password re-entry.** The first action asks for the password again
+  (`/api/auth/elevate`, throttled like logins) and gives a token valid for
+  5 minutes, bound to that admin and that sign-in. It is kept only in the
+  page's memory (not `localStorage`) and is never accepted as a session
+  token, so a stolen session token alone cannot stop or delete containers.
+- **Protected containers.** The log viewer's own containers (label
+  `docker-log-viewer.protected=true`, set in `docker-compose.yml`, plus the
+  backend recognising itself) and anything in `CONTAINER_ACTIONS_PROTECTED`
+  show 🔒 and are refused by the API. Protect databases this way, e.g.
+  `CONTAINER_ACTIONS_PROTECTED=postgres-*,redis-*`, or add the label to any
+  container.
+- **Delete** works only on a stopped container, requires typing its exact
+  name, and keeps its volumes. Stop / restart ask for confirmation.
+- One action per container at a time, at most 20 actions per admin per
+  minute, and every attempt (allowed, refused or failed) is audited as
+  `container.action`; password re-entries as `auth.elevate`.
+
+Set `CONTAINER_ACTIONS_ENABLED=false` to remove the feature entirely.
+
 ## Audit Log
 
 Security events are written as one JSON object per line, tagged
@@ -375,6 +410,7 @@ container re-creation). Passwords, hashes and tokens are never logged.
 | `logs.access` | who opened which container's logs (REST or WebSocket) |
 | `ws.auth`, `ws.session_ended` | WebSocket authentication and forced disconnects |
 | `admin.user_create`, `admin.user_update`, `admin.user_delete`, `admin.revoke_sessions` | admin actions with actor, target and the changed fields |
+| `auth.elevate`, `container.action` | password re-entry for container actions; every start / stop / restart / remove with actor, container and outcome |
 | `system.*` | startup: admin bootstrap, disabled default passwords, removed `*` grants |
 
 ```bash
@@ -393,7 +429,7 @@ or rename both work).
 
 1. **JWT_SECRET** - Required, no default; weak or previously published values are refused. Tokens are HS256, 15 min, revocable (logout, password change, admin revoke)
 2. **No default credentials** - The admin is created from `ADMIN_INITIAL_PASSWORD` and must pick a new password at first login
-3. **Docker socket access** - The `:ro` mount does not make the Docker API read-only: the backend can call any Docker endpoint, so every container reference is validated and authorised server-side against the container's canonical ID/name before it reaches Docker
+3. **Docker socket access** - The `:ro` mount does not make the Docker API read-only: the backend can call any Docker endpoint, so every container reference is validated and authorised server-side against the container's canonical ID/name before it reaches Docker. Container actions additionally need a fresh password re-entry and skip protected containers (see [Container Actions](#container-actions))
 4. **User data persistence** - Users are stored in a Docker volume (`users-data`)
 5. **Brute-force protection** - 5 failed password checks per account and client IP (20 per IP) lock further attempts for 15 minutes
 6. **HTTP hardening** - Security headers (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy) are set by the frontend nginx; HSTS and the server banner are handled by the host nginx (see [NGINX_SETUP.md](NGINX_SETUP.md)). CORS is same-origin by default, the framework banner (`X-Powered-By`) is disabled, and malformed request bodies get a JSON error

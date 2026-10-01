@@ -14,6 +14,13 @@ function frame(stream, text) {
   return Buffer.concat([header, payload]);
 }
 
+function dockerError(statusCode, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.json = { message };
+  return error;
+}
+
 function notFound(ref) {
   const error = new Error(`No such container: ${ref}`);
   error.statusCode = 404;
@@ -28,6 +35,7 @@ function createFakeDocker(specs = []) {
     id: spec.id || randomContainerId(),
     name: spec.name,
     state: spec.state || 'running',
+    labels: spec.labels || {},
     logs: (spec.logs || []).map(entry => (
       typeof entry === 'string' ? { text: entry, stream: 'stdout', time: new Date() } : { stream: 'stdout', time: new Date(), ...entry }
     )),
@@ -35,6 +43,8 @@ function createFakeDocker(specs = []) {
   }));
 
   const requestedRefs = [];
+  // [{ action, ref }] for every start/stop/restart/remove call
+  const actionCalls = [];
 
   function resolve(ref) {
     if (typeof ref !== 'string' || !ref) return null;
@@ -60,12 +70,14 @@ function createFakeDocker(specs = []) {
   const docker = {
     containers,
     requestedRefs,
+    actionCalls,
 
     async listContainers() {
       return containers.map(c => ({
         Id: c.id,
         Names: [`/${c.name}`],
         Image: 'test/image:latest',
+        Labels: c.labels,
         State: c.state,
         Status: c.state === 'running' ? 'Up 1 minute' : 'Exited (0) 1 minute ago',
         Created: Math.floor(Date.now() / 1000) - 60,
@@ -94,7 +106,43 @@ function createFakeDocker(specs = []) {
         async inspect() {
           const c = resolve(ref);
           if (!c) throw notFound(ref);
-          return { Id: c.id, Name: `/${c.name}`, State: { Status: c.state, Running: c.state === 'running' } };
+          return {
+            Id: c.id,
+            Name: `/${c.name}`,
+            State: { Status: c.state, Running: c.state === 'running', Restarting: false },
+            Config: { Labels: c.labels }
+          };
+        },
+
+        async start() {
+          const c = resolve(ref);
+          if (!c) throw notFound(ref);
+          actionCalls.push({ action: 'start', ref });
+          if (c.state === 'running') throw dockerError(304, 'container already started');
+          c.state = 'running';
+        },
+
+        async stop() {
+          const c = resolve(ref);
+          if (!c) throw notFound(ref);
+          actionCalls.push({ action: 'stop', ref });
+          if (c.state !== 'running') throw dockerError(304, 'container already stopped');
+          c.state = 'exited';
+        },
+
+        async restart() {
+          const c = resolve(ref);
+          if (!c) throw notFound(ref);
+          actionCalls.push({ action: 'restart', ref });
+          c.state = 'running';
+        },
+
+        async remove(opts = {}) {
+          const c = resolve(ref);
+          if (!c) throw notFound(ref);
+          actionCalls.push({ action: 'remove', ref, opts });
+          if (c.state === 'running' && !opts.force) throw dockerError(409, 'cannot remove a running container');
+          containers.splice(containers.indexOf(c), 1);
         },
 
         async logs(opts = {}) {

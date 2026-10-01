@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ContainerList from './components/ContainerList';
+import ContainerActions from './components/ContainerActions';
 import LogViewer from './components/LogViewer';
 import LogFilters from './components/LogFilters';
 import Login from './components/Login';
@@ -50,6 +51,10 @@ function App() {
   const [timeRange, setTimeRange] = useState('live');
   const [customDateRange, setCustomDateRange] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  // Admin container actions: whether the server allows them, and the
+  // short-lived token from re-entering the password (memory only)
+  const [actionsEnabled, setActionsEnabled] = useState(false);
+  const [actionUnlock, setActionUnlock] = useState(null);
   const wsRef = useRef(null);
   const tokenRef = useRef(null);
   const selectedContainerRef = useRef(null);
@@ -98,6 +103,8 @@ function App() {
     setShowChangePassword(false);
     setShowUserManagement(false);
     setShowAlerts(false);
+    setActionUnlock(null);
+    setActionsEnabled(false);
     setContainers([]);
     setSelectedContainer(null);
     setLogsMap({});
@@ -275,6 +282,18 @@ function App() {
       return () => clearInterval(interval);
     }
   }, [hasSession, mustChangePassword, fetchContainers, fetchDockerInfo]);
+
+  // Admins: does the server allow container actions?
+  const isAdmin = user?.role === 'admin';
+  useEffect(() => {
+    if (!hasSession || mustChangePassword || !isAdmin) return undefined;
+    let cancelled = false;
+    fetch(`${API_URL}/api/container-actions`, { headers: getAuthHeaders() })
+      .then(response => (response.ok ? response.json() : { enabled: false }))
+      .then(data => { if (!cancelled) setActionsEnabled(Boolean(data.enabled)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [hasSession, mustChangePassword, isAdmin]);
 
   // Update ref when selectedContainer changes
   useEffect(() => {
@@ -465,6 +484,10 @@ function App() {
   }, [selectedContainer, timeRange, fetchLogsByTimeRange]);
 
   const currentLogs = selectedContainer ? (logsMap[selectedContainer.fullId] || []) : [];
+  // The selection is a snapshot; state and protection come from the refreshed list
+  const liveSelected = selectedContainer
+    ? containers.find(c => c.fullId === selectedContainer.fullId) || selectedContainer
+    : null;
   const currentPagination = selectedContainer ? paginationMap[selectedContainer.fullId] : null;
 
   const handleSelectContainer = (container) => {
@@ -742,9 +765,20 @@ function App() {
               <div className="log-header">
                 <div className="container-info">
                   <h2>{selectedContainer.name}</h2>
-                  <span className={`container-state ${selectedContainer.state}`}>
-                    {selectedContainer.state}
+                  <span className={`container-state ${liveSelected.state}`}>
+                    {liveSelected.state}
                   </span>
+                  {isAdmin && actionsEnabled && (
+                    <ContainerActions
+                      key={selectedContainer.fullId}
+                      container={liveSelected}
+                      unlock={actionUnlock}
+                      onUnlock={setActionUnlock}
+                      onChanged={fetchContainers}
+                      onRemoved={() => { setSelectedContainer(null); fetchContainers(); }}
+                      onSessionExpired={handleLogout}
+                    />
+                  )}
                 </div>
 
                 <LogFilters

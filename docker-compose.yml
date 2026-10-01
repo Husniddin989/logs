@@ -3,6 +3,9 @@ services:
     build: ./backend
     container_name: docker-log-viewer-backend
     restart: unless-stopped
+    # Container actions in the UI can never stop or remove the viewer itself
+    labels:
+      - "docker-log-viewer.protected=true"
     expose:
       - "2001"
     volumes:
@@ -53,6 +56,9 @@ services:
       - ALERT_RESTART_WARN=${ALERT_RESTART_WARN:-}
       - ALERT_SERVICE_WARN=${ALERT_SERVICE_WARN:-}
       - ALERT_SERVICE_CRITICAL=${ALERT_SERVICE_CRITICAL:-}
+      # Start / stop / restart / remove for admins ("false" turns it off)
+      - CONTAINER_ACTIONS_ENABLED=${CONTAINER_ACTIONS_ENABLED:-true}
+      - CONTAINER_ACTIONS_PROTECTED=${CONTAINER_ACTIONS_PROTECTED:-}
     networks:
       - log-viewer-network
 
@@ -60,6 +66,8 @@ services:
     build: ./frontend
     container_name: docker-log-viewer-frontend
     restart: unless-stopped
+    labels:
+      - "docker-log-viewer.protected=true"
     ports:
       - "2000:80"
     depends_on:

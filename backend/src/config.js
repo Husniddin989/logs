@@ -163,7 +163,12 @@ function loadConfig(env = process.env) {
       accessTtlSeconds,
       sessionMaxAgeSeconds
     },
-    alerts: loadAlertConfig(env)
+    alerts: loadAlertConfig(env),
+    // Start / stop / restart / remove for admins (password re-entry required)
+    containerActions: {
+      enabled: env.CONTAINER_ACTIONS_ENABLED !== 'false',
+      protectedContainers: parseList(env.CONTAINER_ACTIONS_PROTECTED)
+    }
   };
 }
 
