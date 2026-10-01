@@ -72,7 +72,11 @@ async function startTestServer({
   const auditEntries = [];
   const audit = createAuditLogger({ stream: { write: line => auditEntries.push(line) } });
   const loginThrottle = createLoginThrottle({ now: clock.now });
-  const { server, wss } = createApp({ docker, userStore, tokens, audit, loginThrottle, ...appOptions });
+  // appOptions.containerActions may be a factory that needs the fake docker
+  const options = typeof appOptions.containerActions === 'function'
+    ? { ...appOptions, containerActions: appOptions.containerActions(docker) }
+    : appOptions;
+  const { server, wss } = createApp({ docker, userStore, tokens, audit, loginThrottle, ...options });
 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();

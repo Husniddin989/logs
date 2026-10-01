@@ -8,6 +8,7 @@ const { createTokenService } = require('./tokens');
 const { ensureAdminAccount, removeUserWildcardGrants } = require('./bootstrap');
 const { createAlertSettingsStore, defaultsFromConfig } = require('./alertSettings');
 const { createAlertService } = require('./alertService');
+const { createContainerActions } = require('./containerActions');
 
 async function main() {
   const config = loadConfig(process.env);
@@ -51,8 +52,11 @@ async function main() {
     docker, userStore, tokens, audit,
     trustProxy: config.trustProxy,
     corsOrigins: config.corsOrigins,
-    alerts: { store: alertStore, service: alertService }
+    alerts: { store: alertStore, service: alertService },
+    containerActions: createContainerActions({ docker, ...config.containerActions })
   });
+
+  console.log(`[startup] container actions ${config.containerActions.enabled ? 'enabled for admins' : 'disabled'}`);
 
   server.listen(config.port, () => {
     console.log(`Docker Log Viewer API running on port ${config.port}`);

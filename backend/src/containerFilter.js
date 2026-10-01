@@ -19,7 +19,8 @@ function isValidPattern(entry) {
 }
 
 function patternToRegExp(pattern) {
-  const source = pattern.split('*').map(part => part.replace(/[.\-]/g, '\\$&')).join('.*');
+  // Only * is special; everything else (also from env values) is literal
+  const source = pattern.split('*').map(part => part.replace(/[.+?^${}()|[\]\\-]/g, '\\$&')).join('.*');
   return new RegExp(`^${source}$`);
 }
 

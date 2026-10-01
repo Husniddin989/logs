@@ -7,6 +7,11 @@ const AUDIENCE = 'docker-log-viewer';
 const ALGORITHM = 'HS256';
 const PASSWORD_CHANGE_SCOPE = 'password_change';
 const PASSWORD_CHANGE_TTL_SECONDS = 10 * 60;
+// Short-lived proof that an admin re-entered the password, required for
+// start / stop / restart / remove of containers. Never accepted as a
+// session token.
+const CONTAINER_ACTIONS_SCOPE = 'container_actions';
+const CONTAINER_ACTIONS_TTL_SECONDS = 5 * 60;
 
 class TokenError extends Error {
   constructor(reason) {
@@ -62,6 +67,11 @@ function createTokenService({
     return sign(user, { authTime: nowSeconds(), scope: PASSWORD_CHANGE_SCOPE, ttl: PASSWORD_CHANGE_TTL_SECONDS });
   }
 
+  // Bound to the session's auth_time, so it dies with the session
+  function issueContainerActions(user, { authTime }) {
+    return sign(user, { authTime, scope: CONTAINER_ACTIONS_SCOPE, ttl: CONTAINER_ACTIONS_TTL_SECONDS });
+  }
+
   function verify(token) {
     let claims;
     try {
@@ -98,7 +108,16 @@ function createTokenService({
     return claims.auth_time + sessionMaxAgeSeconds <= nowSeconds();
   }
 
-  return { issueSession, issuePasswordChange, verify, revoke, sessionExpired, accessTtlSeconds };
+  return {
+    issueSession,
+    issuePasswordChange,
+    issueContainerActions,
+    verify,
+    revoke,
+    sessionExpired,
+    accessTtlSeconds,
+    containerActionsTtlSeconds: CONTAINER_ACTIONS_TTL_SECONDS
+  };
 }
 
 function loadRevocations(file) {
@@ -118,4 +137,4 @@ function persistRevocations(file, revoked) {
   fs.renameSync(tmp, file);
 }
 
-module.exports = { createTokenService, TokenError, PASSWORD_CHANGE_SCOPE };
+module.exports = { createTokenService, TokenError, PASSWORD_CHANGE_SCOPE, CONTAINER_ACTIONS_SCOPE };

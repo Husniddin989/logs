@@ -8,7 +8,8 @@ const { createAuditLogger } = require('./audit');
 const { createLoginThrottle } = require('./loginThrottle');
 const { parseDockerLogs, demuxDockerStream, framesToLogLines } = require('./dockerLogs');
 const { validatePassword, hashPassword, verifyPassword } = require('./passwords');
-const { TokenError, PASSWORD_CHANGE_SCOPE } = require('./tokens');
+const { TokenError, PASSWORD_CHANGE_SCOPE, CONTAINER_ACTIONS_SCOPE } = require('./tokens');
+const { createContainerActions, ActionError } = require('./containerActions');
 const {
   applySettingsUpdate,
   publicSettings,
@@ -58,9 +59,12 @@ function createApp({
   corsOrigins = [],
   // { store, service } for Telegram alerts; routes are only added when given
   alerts = null,
+  // createContainerActions(...) result; off unless given
+  containerActions = null,
   wsRevalidateIntervalMs = 30 * 1000,
   wsAuthTimeoutMs = 10 * 1000
 }) {
+  const actions = containerActions || createContainerActions({ docker, enabled: false });
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocket.Server({ server, maxPayload: 64 * 1024 });
@@ -141,6 +145,11 @@ function createApp({
         error: error.reason === 'revoked' ? 'Token revoked' : 'Invalid token',
         reason: error.reason
       };
+    }
+
+    // Purpose-bound tokens (container actions) are never session tokens
+    if (claims.scope !== undefined && claims.scope !== PASSWORD_CHANGE_SCOPE) {
+      return { status: 401, error: 'Invalid token', reason: 'wrong_scope', subject: claims.sub };
     }
 
     const user = loadUsers().users.find(u => u.id === claims.sub);
@@ -424,6 +433,46 @@ function createApp({
     } catch (error) {
       console.error('Change password error:', error);
       res.status(500).json({ error: 'Failed to change password' });
+    }
+  });
+
+  // Re-enter the password to unlock container actions for a few minutes.
+  // Throttled like logins, so a stolen session cannot guess the password.
+  app.post('/api/auth/elevate', authMiddleware, adminMiddleware, async (req, res) => {
+    const ctx = requestContext(req);
+    const fail = (status, error, reason) => {
+      audit.log('auth.elevate', { outcome: 'failure', reason, actor: actorOf(req.user), ...ctx });
+      return res.status(status).json({ error });
+    };
+
+    try {
+      if (!actions.enabled) return fail(403, 'Container boshqaruvi o‘chirilgan', 'disabled');
+      const { password } = req.body || {};
+      if (typeof password !== 'string' || !password || password.length > 1024) {
+        return fail(400, 'Parolni kiriting', 'missing_fields');
+      }
+
+      const attempt = loginThrottle.begin(`elevate:${req.user.id}`, req.ip);
+      if (attempt.retryAfter) {
+        res.set('Retry-After', String(attempt.retryAfter));
+        return fail(429, `Juda ko‘p noto‘g‘ri urinish. ${Math.ceil(attempt.retryAfter / 60)} daqiqadan keyin urinib ko‘ring.`, 'rate_limited');
+      }
+      const ok = await verifyPassword(password, req.user.password).catch(() => false);
+      attempt.finish(ok);
+      if (!ok) return fail(401, 'Parol noto‘g‘ri', 'bad_password');
+
+      // The password check took time: make sure the admin was not demoted,
+      // deleted or signed out meanwhile
+      if (!isStillAdmin(loadUsers(), req)) return fail(401, 'Session is no longer valid', 'session_revoked');
+
+      audit.log('auth.elevate', { outcome: 'success', actor: actorOf(req.user), ...ctx });
+      res.json({
+        actionToken: tokens.issueContainerActions(req.user, { authTime: req.tokenClaims.auth_time }),
+        expiresIn: tokens.containerActionsTtlSeconds
+      });
+    } catch (error) {
+      console.error('Elevate error:', error);
+      res.status(500).json({ error: 'Failed to verify password' });
     }
   });
 
@@ -844,6 +893,10 @@ function createApp({
           ports: c.Ports || [],
           sizeRw: c.SizeRw || 0,
           sizeRootFs: c.SizeRootFs || 0,
+          // Admins only: why start/stop/remove is refused for this container
+          ...(req.user.role === 'admin'
+            ? { protected: actions.protectionOf({ Id: c.Id, Name: c.Names?.[0], Config: { Labels: c.Labels } }) }
+            : {}),
           cpuPercent: 0,
           memUsage: 0,
           memLimit: 0,
@@ -887,6 +940,76 @@ function createApp({
     } catch (error) {
       console.error('Error fetching containers:', error);
       res.status(500).json({ error: 'Failed to fetch containers' });
+    }
+  });
+
+  // ================== CONTAINER ACTIONS (Admin only) ==================
+
+  app.get('/api/container-actions', authMiddleware, adminMiddleware, (req, res) => {
+    res.json({ enabled: actions.enabled, actions: actions.actions, unlockSeconds: tokens.containerActionsTtlSeconds });
+  });
+
+  // The X-Action-Token from /api/auth/elevate must belong to this admin's
+  // current session. Returns a rejection reason, or null when it is valid.
+  function actionTokenProblem(req) {
+    const token = req.get('X-Action-Token');
+    if (!token) return 'missing';
+    let claims;
+    try {
+      claims = tokens.verify(token);
+    } catch (error) {
+      if (!(error instanceof TokenError)) throw error;
+      return error.reason;
+    }
+    if (claims.scope !== CONTAINER_ACTIONS_SCOPE) return 'wrong_scope';
+    if (claims.sub !== req.user.id || claims.ver !== req.tokenClaims.ver || claims.auth_time !== req.tokenClaims.auth_time) {
+      return 'other_session';
+    }
+    return null;
+  }
+
+  // body: { action: start | stop | restart | remove, confirm?: name (remove) }
+  app.post('/api/containers/:id/actions', authMiddleware, adminMiddleware, async (req, res) => {
+    const ctx = requestContext(req);
+    const action = typeof req.body?.action === 'string' ? req.body.action : undefined;
+    const log = (outcome, details) => audit.log('container.action', {
+      outcome, action, actor: actorOf(req.user), ...details, ...ctx
+    });
+
+    try {
+      const problem = actionTokenProblem(req);
+      if (problem) {
+        log('denied', { reason: `action_token_${problem}`, ref: String(req.params.id).slice(0, 128) });
+        return res.status(401).json({ error: 'Parolni qayta kiriting', code: 'ACTION_TOKEN_REQUIRED' });
+      }
+
+      // Canonical identity first: every later step uses the full ID
+      const access = await authorizeContainer(req.user, req.params.id);
+      if (!access.container) {
+        log('failure', { reason: 'not_found', ref: String(req.params.id).slice(0, 128) });
+        return res.status(access.status).json({ error: access.error });
+      }
+
+      const result = await actions.perform({
+        userId: req.user.id,
+        containerId: access.container.id,
+        action,
+        confirmName: req.body?.confirm,
+        beforeRun: () => {
+          if (!isStillAdmin(loadUsers(), req)) throw new ActionError(401, 'Session is no longer valid', 'session_revoked');
+        }
+      });
+
+      log('success', { container: result.container, changed: result.changed });
+      res.json({ ok: true, action, changed: result.changed, container: result.container });
+    } catch (error) {
+      if (error instanceof ActionError) {
+        log(error.status === 403 || error.status === 401 ? 'denied' : 'failure', { reason: error.reason, container: { ref: String(req.params.id).slice(0, 128) } });
+        return res.status(error.status).json({ error: error.message });
+      }
+      console.error('Container action error:', error);
+      log('failure', { reason: 'error', container: { ref: String(req.params.id).slice(0, 128) } });
+      res.status(500).json({ error: 'Failed to perform the action' });
     }
   });
 
