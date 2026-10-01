@@ -473,6 +473,7 @@ function createAlerter({
     const context = { ...message, host: snapshot.host, hostname: snapshot.host?.hostname, now: time };
     const seen = new Set();
     const sent = [];
+    const ignored = new Set(snapshot.ignoredContainers || []);
 
     for (const check of checks) {
       seen.add(check.key);
@@ -536,6 +537,8 @@ function createAlerter({
       // previous container states until Docker answers again
       if (snapshot.dockerAvailable === false && key.startsWith('container.')) continue;
       state.delete(key);
+      // A container that just became ignored is not "removed"
+      if (key.startsWith('container.') && ignored.has(key.slice('container.'.length, key.lastIndexOf('.')))) continue;
       if (enabled.containerState && key.endsWith('.state') && previous.level !== 'ok') {
         const detail = 'container o‘chirildi yoki qayta nomlandi — endi kuzatilmaydi';
         const text = alertMessage({

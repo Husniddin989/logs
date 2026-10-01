@@ -12,6 +12,7 @@ const {
   isValidTimeZone
 } = require('./alerting');
 const { DEFAULT_PORTS } = require('./services');
+const { isPattern, isValidPattern } = require('./containerFilter');
 
 const BOT_TOKEN_PATTERN = /^\d+:[A-Za-z0-9_-]{30,}$/;
 // Numeric chat/group/channel id, or a public channel username
@@ -52,6 +53,7 @@ function defaultsFromConfig(alerts) {
     renotifySeconds: alerts.renotifySeconds,
     summarySeconds: alerts.summarySeconds,
     ignoreContainers: alerts.ignoreContainers,
+    ignoreCiRunners: alerts.ignoreCiRunners !== false,
     checks: { ...DEFAULT_CHECKS, containerResources: Boolean(alerts.containerResources) },
     // Postgres / Redis servers to probe: { id, type, name, host, port, user,
     // password, database, ssl, enabled }
@@ -281,9 +283,15 @@ function applySettingsUpdate(current, body) {
         throw new Error('ignoreContainers must be a list of container names');
       }
       const names = [...new Set(body.ignoreContainers.map(name => String(name).trim()).filter(Boolean))];
-      const bad = names.find(name => !isValidContainerRef(name));
+      // Exact names, or patterns with * such as runner-*
+      const bad = names.find(name => (isPattern(name) ? !isValidPattern(name) : !isValidContainerRef(name)));
       if (bad) throw new Error(`Noto‘g‘ri container nomi: ${bad}`);
       next.ignoreContainers = names;
+    }
+
+    if (body.ignoreCiRunners !== undefined) {
+      if (typeof body.ignoreCiRunners !== 'boolean') throw new Error('ignoreCiRunners must be true or false');
+      next.ignoreCiRunners = body.ignoreCiRunners;
     }
 
     if (body.thresholds !== undefined) {

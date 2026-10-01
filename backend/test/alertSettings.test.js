@@ -85,6 +85,8 @@ describe('alert settings helpers', () => {
       [{ thresholds: { diskCritical: 150 } }, /1 dan 100/],
       [{ thresholds: { restartWarn: 0 } }, /restartWarn/],
       [{ ignoreContainers: ['../etc'] }, /container nomi/],
+      [{ ignoreContainers: ['runner-*/x'] }, /container nomi/],
+      [{ ignoreCiRunners: 'yes' }, /ignoreCiRunners/],
       [{ hostname: 'x'.repeat(101) }, /100 belgi/],
       [{ timezone: 'Mars/Olympus' }, /Vaqt zonasi/],
       [{ messageTemplate: '{servername}' }, /Noma’lum/],
@@ -154,6 +156,14 @@ describe('alert settings helpers', () => {
 
     const cleared = applySettingsUpdate(first.settings, { services: [{ ...view.services[0], clearPassword: true }] });
     assert.equal(cleared.settings.services[0].password, '');
+  });
+
+  test('CI runner containers are ignored by default and patterns are accepted', () => {
+    assert.equal(base.ignoreCiRunners, true);
+    const { settings, error } = applySettingsUpdate(base, { ignoreContainers: ['runner-*', 'web'], ignoreCiRunners: false });
+    assert.equal(error, undefined);
+    assert.deepEqual(settings.ignoreContainers, ['runner-*', 'web']);
+    assert.equal(settings.ignoreCiRunners, false);
   });
 
   test('durations accept 60s / 15m / 12h, and 0 disables the report', () => {

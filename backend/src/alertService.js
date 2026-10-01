@@ -70,6 +70,7 @@ function createAlertService({
       intervalMs: settings.intervalSeconds * 1000,
       summaryIntervalMs: settings.summarySeconds * 1000,
       ignoreContainers: settings.ignoreContainers,
+      ignoreCiRunners: settings.ignoreCiRunners !== false,
       services: settings.services || [],
       probe,
       announceOnStart: announce,

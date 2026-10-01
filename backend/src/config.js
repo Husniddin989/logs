@@ -131,6 +131,8 @@ function loadAlertConfig(env) {
     // Container CPU/RAM alerts are off unless asked for
     containerResources: env.ALERT_CONTAINER_RESOURCES === 'true',
     ignoreContainers: parseList(env.ALERT_IGNORE_CONTAINERS),
+    // GitLab Runner job containers are left out unless set to "false"
+    ignoreCiRunners: env.ALERT_IGNORE_CI_RUNNERS !== 'false',
     thresholds
   };
 }

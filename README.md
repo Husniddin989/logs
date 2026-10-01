@@ -351,8 +351,12 @@ A **status report** listing the server, Postgres / Redis and every container
 
 All thresholds are configurable (`ALERT_CPU_WARN`, `ALERT_DISK_CRITICAL`,
 `ALERT_SERVICE_WARN`, ... see `.env.example`); `ALERT_IGNORE_CONTAINERS`
-excludes noisy containers and `ALERT_HOSTNAME` sets the server name shown in
-messages. In Docker the backend reads the host disk through the read-only
+excludes noisy containers (exact names or patterns such as `preview-*`) and
+`ALERT_HOSTNAME` sets the server name shown in messages. GitLab Runner job
+containers (label `com.gitlab.gitlab-runner.*` or a
+`runner-…-project-…-concurrent-…` name) live for one CI job and are left out
+by default; `ALERT_IGNORE_CI_RUNNERS=false` or the UI checkbox brings them
+back. The runner's own container (e.g. `gitlab-runner`) is still watched. In Docker the backend reads the host disk through the read-only
 `/:/host:ro` mount.
 
 ## Audit Log
