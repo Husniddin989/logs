@@ -14,9 +14,10 @@ Real-time Docker container log viewer with user authentication and access contro
 - Container stats monitoring (CPU, RAM, Uptime, Size)
 - Admin container actions: start, stop, restart, delete (password re-entry required)
 - Telegram alerts for the server, containers, Postgres and Redis
-- Admin Monitor dashboard with server/container CPU, RAM, disk and network charts
+- Admin Monitor dashboard with server resource gauges and time-based CPU, RAM, swap, disk and network charts
 - Monitor history is sampled every minute and retained for up to 72 hours in the `users-data` volume
-- Dark theme log viewer and light monitor dashboard
+- Admin-only, manual server internet speed test with download, upload and latency history retained for up to 72 hours
+- Dark theme log viewer and monitor dashboard
 
 ## Quick Start
 
@@ -176,7 +177,8 @@ services:
 | `/api/container-actions` | GET | Admin: whether container actions are enabled |
 | `/api/docker/info` | GET | Docker system info |
 | `/api/monitor/snapshot` | GET (Admin) | Current host CPU, RAM, disk and network metrics |
-| `/api/monitor/history?from=<ISO>&to=<ISO>` | GET (Admin) | Time-filtered host and container metrics; at most 72 hours |
+| `/api/monitor/history?from=<ISO>&to=<ISO>` | GET (Admin) | Time-filtered host/container metrics and speed-test results; at most 72 hours |
+| `/api/monitor/speedtest` | POST (Admin) | Manually measure server-to-Cloudflare-edge download, upload and latency; about 39 MB of traffic per successful test, with a 60-second cooldown |
 
 ### WebSocket
 

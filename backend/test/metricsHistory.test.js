@@ -11,6 +11,7 @@ function hostSnapshot(rxBytes, txBytes) {
     hostname: 'monitor-test',
     cpu: { percent: 20, cores: 4, loadAvg: [0.5, 0.4, 0.3] },
     memory: { used: 20, total: 100, free: 80, percent: 20 },
+    swap: { used: 10, total: 50, free: 40, percent: 20 },
     disk: { used: 30, total: 100, available: 70, percent: 30 },
     network: { rxBytes, txBytes, source: 'server' }
   };
@@ -54,6 +55,7 @@ test('metrics history persists one-minute samples and derives network rates', as
   assert.equal(samples.length, 2);
   assert.equal(samples[1].host.network.rxBytesPerSecond, 100);
   assert.equal(samples[1].host.network.txBytesPerSecond, 100);
+  assert.deepEqual(samples[1].host.swap, { used: 10, total: 50, free: 40, percent: 20 });
   assert.equal(samples[1].containers[0].network.rxBytesPerSecond, 100);
   assert.equal(samples[1].containers[0].network.txBytesPerSecond, 100);
   assert.equal(history.sampleIntervalMs, 60000);
@@ -87,6 +89,14 @@ test('startup prunes metrics older than the 72-hour retention window', async t =
 
 test('monitor history is admin-only and rejects ranges longer than 72 hours', async t => {
   const captured = [];
+  const speedTestResult = {
+    timestamp: new Date().toISOString(),
+    provider: 'Cloudflare edge',
+    downloadMbps: 80,
+    uploadMbps: 20,
+    latencyMs: 12
+  };
+  let speedTestRuns = 0;
   const metricsHistory = {
     sampleIntervalMs: SAMPLE_INTERVAL_MS,
     query(from, to) {
@@ -94,12 +104,21 @@ test('monitor history is admin-only and rejects ranges longer than 72 hours', as
       return [{ timestamp: new Date(from).toISOString(), host: {}, containers: [] }];
     }
   };
+  const networkSpeedTest = {
+    query(from, to) {
+      return [{ ...speedTestResult, from, to }];
+    },
+    async run() {
+      speedTestRuns += 1;
+      return speedTestResult;
+    }
+  };
   const server = await startTestServer({
     users: [
       { username: 'admin', role: 'admin' },
       { username: 'viewer', role: 'user' }
     ],
-    appOptions: { metricsHistory }
+    appOptions: { metricsHistory, networkSpeedTest }
   });
   t.after(() => server.close());
 
@@ -110,9 +129,19 @@ test('monitor history is admin-only and rejects ranges longer than 72 hours', as
   assert.equal(adminResponse.body.retentionHours, 72);
   assert.equal(adminResponse.body.sampleIntervalSeconds, 60);
   assert.equal(adminResponse.body.samples.length, 1);
+  assert.equal(adminResponse.body.speedTests.length, 1);
 
   const viewerResponse = await server.request('GET', '/api/monitor/history', { token: viewerToken });
   assert.equal(viewerResponse.status, 403);
+
+  const runResponse = await server.request('POST', '/api/monitor/speedtest', { token: adminToken });
+  assert.equal(runResponse.status, 200);
+  assert.equal(runResponse.body.downloadMbps, 80);
+  assert.equal(speedTestRuns, 1);
+
+  const viewerRunResponse = await server.request('POST', '/api/monitor/speedtest', { token: viewerToken });
+  assert.equal(viewerRunResponse.status, 403);
+  assert.equal(speedTestRuns, 1);
 
   const from = new Date(Date.now() - RETENTION_MS - 1000).toISOString();
   const to = new Date().toISOString();

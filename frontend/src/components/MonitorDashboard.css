@@ -73,6 +73,7 @@
 .monitor-section-heading p { margin: 0; color: var(--monitor-muted); font-size: 12px; }
 .monitor-sample-count { color: #9aa9bd; font-size: 11px; white-space: nowrap; }
 .monitor-metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
+.monitor-gauge-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .monitor-metric-card { min-width: 0; overflow: hidden; border: 1px solid #29384b; border-radius: 13px; padding: 16px 16px 12px; background: linear-gradient(155deg, #151f2c 0%, #111a26 100%); box-shadow: 0 8px 24px rgba(0, 0, 0, .15), inset 0 1px 0 rgba(255, 255, 255, .025); }
 .monitor-metric-card::before { display: block; width: 34px; height: 3px; margin: -16px 0 13px; border-radius: 0 0 4px 4px; background: #8292a7; content: ""; }
 .monitor-metric-card.cpu::before { background: #4b91ff; box-shadow: 0 0 14px rgba(75, 145, 255, .3); }
@@ -94,6 +95,45 @@
 .monitor-chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .monitor-chart-legend i { width: 8px; height: 8px; border-radius: 50%; }
 .monitor-history-empty { margin: 12px 0 0; border: 1px dashed #36475d; border-radius: 9px; padding: 12px 14px; color: #a0aec1; background: #111a25; font-size: 12px; }
+
+.monitor-gauge-heading { display: grid; gap: 4px; min-height: 36px; }
+.monitor-gauge-heading strong { overflow: hidden; color: #e3ebf6; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-gauge-heading span { overflow: hidden; color: #8798ae; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-resource-gauge { display: block; width: 100%; height: 148px; margin: -3px auto -4px; overflow: visible; }
+.monitor-gauge-track { fill: none; stroke: #283340; stroke-width: 10; stroke-linecap: round; }
+.monitor-gauge-threshold { fill: none; stroke-width: 10; stroke-linecap: round; opacity: .22; }
+.monitor-gauge-threshold.low { stroke: #3bc65b; }
+.monitor-gauge-threshold.medium { stroke: #f3a641; }
+.monitor-gauge-threshold.high { stroke: #fb5964; }
+.monitor-gauge-value-arc { fill: none; stroke-width: 10; stroke-linecap: round; filter: drop-shadow(0 0 4px currentColor); }
+.monitor-gauge-value { fill: #39c75d; font-size: 31px; font-weight: 560; font-variant-numeric: tabular-nums; }
+.monitor-gauge-caption { fill: #a3b1c3; font-size: 10px; font-weight: 600; letter-spacing: .04em; }
+.monitor-gauge-scale { fill: #8292a7; font-size: 9px; }
+.monitor-gauge-card .monitor-chart { height: 100px; }
+.monitor-gauge-card .monitor-chart-empty { min-height: 100px; }
+.monitor-gauge-card.load .monitor-gauge-value { fill: #f3a641; }
+.monitor-gauge-card.memory .monitor-gauge-value,
+.monitor-gauge-card.swap .monitor-gauge-value { fill: #ad82ff; }
+.monitor-gauge-card.disk .monitor-gauge-value { fill: #35d39b; }
+
+.monitor-network-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); align-items: stretch; gap: 14px; }
+.monitor-network-grid > * { min-width: 0; }
+.monitor-speed-test-card { display: flex; flex-direction: column; }
+.monitor-speed-test-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.monitor-speed-test-heading h3 { margin: 0 0 3px; color: #e7edf7; font-size: 14px; font-weight: 650; }
+.monitor-speed-test-heading p { margin: 0; color: #8b9bb0; font-size: 10px; }
+.monitor-speed-test-button { flex: 0 0 auto; border-color: #345c8e; color: #a9d0ff; background: #14243a; font-size: 11px; font-weight: 650; }
+.monitor-speed-test-button:disabled { cursor: wait; opacity: .65; }
+.monitor-speed-test-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 16px; }
+.monitor-speed-result { display: grid; gap: 5px; min-width: 0; border: 1px solid #2b394d; border-radius: 9px; padding: 10px 11px; background: #0e1722; }
+.monitor-speed-result span { overflow: hidden; color: #93a2b6; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-speed-result strong { overflow: hidden; color: #ecf2fa; font-size: clamp(15px, 1.4vw, 21px); font-weight: 700; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-speed-result.download strong { color: #80b9ff; }
+.monitor-speed-result.upload strong { color: #c09aff; }
+.monitor-speed-result.latency strong { color: #55d5a2; }
+.monitor-speed-test-meta { margin: 8px 0 0; color: #7789a0; font-size: 9px; }
+.monitor-speed-test-card .monitor-chart { height: 126px; margin-top: auto; }
+.monitor-speed-test-card .monitor-chart-empty { min-height: 126px; }
 
 .monitor-table-wrap { overflow: auto; border: 1px solid #29384b; border-radius: 12px; background: #111a25; box-shadow: 0 8px 24px rgba(0, 0, 0, .14); }
 .monitor-table { width: 100%; min-width: 1120px; border-collapse: collapse; text-align: left; font-size: 12px; }
@@ -136,6 +176,8 @@
 
 @media (max-width: 1280px) {
   .monitor-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .monitor-gauge-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .monitor-network-grid { grid-template-columns: 1fr; }
   .monitor-range-panel { align-items: flex-start; flex-direction: column; }
   .monitor-range-controls { justify-content: flex-start; }
 }
@@ -151,6 +193,8 @@
   .monitor-custom-range label { align-items: flex-start; flex-direction: column; }
   .monitor-custom-range input { width: min(42vw, 180px); }
   .monitor-metric-grid, .container-metric-grid { grid-template-columns: 1fr; }
+  .monitor-gauge-grid { grid-template-columns: 1fr; }
+  .monitor-network-grid { grid-template-columns: 1fr; }
   .monitor-section-heading { align-items: flex-start; flex-direction: column; }
   .monitor-container-picker { width: 100%; align-items: flex-start; flex-direction: column; }
   .monitor-container-picker select { width: 100%; max-width: none; }

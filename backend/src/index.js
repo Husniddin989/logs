@@ -11,6 +11,7 @@ const { createAlertService } = require('./alertService');
 const { createContainerActions } = require('./containerActions');
 const { createHostCollector } = require('./metrics');
 const { createMetricsHistory } = require('./metricsHistory');
+const { createNetworkSpeedTest } = require('./networkSpeedTest');
 
 async function main() {
   const config = loadConfig(process.env);
@@ -62,6 +63,10 @@ async function main() {
     logger: console
   });
   await metricsHistory.initialize();
+  const networkSpeedTest = createNetworkSpeedTest({
+    filePath: path.join(config.dataDir, 'network-speed-tests.ndjson')
+  });
+  await networkSpeedTest.initialize();
 
   const { server } = createApp({
     docker, userStore, tokens, audit,
@@ -71,6 +76,7 @@ async function main() {
     containerActions: createContainerActions({ docker, ...config.containerActions }),
     hostCollector,
     metricsHistory,
+    networkSpeedTest,
   });
 
   console.log(`[startup] container actions ${config.containerActions.enabled ? 'enabled for admins' : 'disabled'}`);

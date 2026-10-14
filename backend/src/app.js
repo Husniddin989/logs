@@ -66,6 +66,7 @@ function createApp({
   containerActions = null,
   hostCollector = null,
   metricsHistory = null,
+  networkSpeedTest = null,
   frontendBuildDir = process.env.FRONTEND_BUILD_DIR || null,
   wsRevalidateIntervalMs = 30 * 1000,
   wsAuthTimeoutMs = 10 * 1000
@@ -1418,8 +1419,36 @@ function createApp({
       to: new Date(requestedTo).toISOString(),
       retentionHours: RETENTION_MS / (60 * 60 * 1000),
       sampleIntervalSeconds: metricsHistory.sampleIntervalMs / 1000,
-      samples: metricsHistory.query(from, requestedTo)
+      samples: metricsHistory.query(from, requestedTo),
+      speedTests: networkSpeedTest ? networkSpeedTest.query(from, requestedTo) : []
     });
+  });
+
+  app.post('/api/monitor/speedtest', authMiddleware, adminMiddleware, async (req, res) => {
+    if (!networkSpeedTest) {
+      return res.status(503).json({ error: 'Server internet speed testing is not configured' });
+    }
+    try {
+      const result = await networkSpeedTest.run();
+      audit.log('admin.monitor_speed_test', {
+        outcome: 'success',
+        actor: actorOf(req.user),
+        ...requestContext(req)
+      });
+      res.json(result);
+    } catch (error) {
+      if (error.statusCode === 409 || error.statusCode === 429) {
+        return res.status(error.statusCode).json({ error: error.message });
+      }
+      audit.log('admin.monitor_speed_test', {
+        outcome: 'failure',
+        reason: error.message,
+        actor: actorOf(req.user),
+        ...requestContext(req)
+      });
+      console.error('Monitor speed test error:', error);
+      res.status(502).json({ error: 'Server internet speed test failed' });
+    }
   });
 
   // Docker info (auth required). Non-admins only get counts over the

@@ -14,6 +14,21 @@ function readMemAvailable(readFile = fs.readFileSync) {
   }
 }
 
+function readSwapUsage(readFile = fs.readFileSync) {
+  try {
+    const content = readFile('/proc/meminfo', 'utf8');
+    const totalMatch = /^SwapTotal:\s+(\d+)\s*kB/m.exec(content);
+    const freeMatch = /^SwapFree:\s+(\d+)\s*kB/m.exec(content);
+    if (!totalMatch || !freeMatch) return null;
+    const total = Number(totalMatch[1]) * 1024;
+    const free = Math.min(total, Number(freeMatch[1]) * 1024);
+    const used = Math.max(0, total - free);
+    return { total, used, free, percent: percent(used, total) };
+  } catch {
+    return null;
+  }
+}
+
 function percent(part, whole) {
   if (!whole || whole <= 0) return 0;
   return Math.min(100, Math.max(0, (part / whole) * 100));
@@ -63,6 +78,7 @@ function createHostCollector({
   osImpl = os,
   statfs = fsp.statfs,
   memAvailable = () => readMemAvailable(),
+  swapUsage = () => readSwapUsage(),
   diskPath = '/',
   networkPath = '/host/proc/net/dev',
   fallbackNetworkPath = '/proc/net/dev',
@@ -141,6 +157,7 @@ function createHostCollector({
         uptimeSeconds: osImpl.uptime(),
         cpu: { percent: cpuPercent, cores: cpus.length, loadAvg: osImpl.loadavg() },
         memory: { total: totalMem, used: totalMem - freeMem, free: freeMem, percent: percent(totalMem - freeMem, totalMem) },
+        swap: swapUsage(),
         disk: await disk(),
         network: await network()
       };
@@ -250,5 +267,6 @@ module.exports = {
   containerMemory,
   containerNetwork,
   readNetworkCounters,
+  readSwapUsage,
   percent
 };

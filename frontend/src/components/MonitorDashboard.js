@@ -59,6 +59,37 @@ function chartSamples(samples, limit = 700) {
   return result;
 }
 
+function gaugeArc(startAngle, endAngle, radius = 70) {
+  const centerX = 120;
+  const centerY = 89;
+  const point = angle => {
+    const radians = (angle * Math.PI) / 180;
+    return `${(centerX + radius * Math.cos(radians)).toFixed(2)} ${(centerY + radius * Math.sin(radians)).toFixed(2)}`;
+  };
+  const sweep = endAngle - startAngle;
+  return `M ${point(startAngle)} A ${radius} ${radius} 0 ${sweep > 180 ? 1 : 0} 1 ${point(endAngle)}`;
+}
+
+function ResourceGauge({ percent, value, caption }) {
+  const safePercent = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0;
+  const color = safePercent >= 90 ? '#fb5964' : safePercent >= 75 ? '#f3a641' : '#35c65a';
+  const startAngle = 135;
+  const endAngle = startAngle + (safePercent / 100) * 270;
+  return (
+    <svg className="monitor-resource-gauge" viewBox="0 0 240 154" role="img" aria-label={`${caption}: ${value}`}>
+      <path d={gaugeArc(startAngle, startAngle + 270)} className="monitor-gauge-track" />
+      <path d={gaugeArc(startAngle, startAngle + 189)} className="monitor-gauge-threshold low" />
+      <path d={gaugeArc(startAngle + 189, startAngle + 243)} className="monitor-gauge-threshold medium" />
+      <path d={gaugeArc(startAngle + 243, startAngle + 270)} className="monitor-gauge-threshold high" />
+      {safePercent > 0 && <path d={gaugeArc(startAngle, endAngle)} className="monitor-gauge-value-arc" style={{ stroke: color }} />}
+      <text x="120" y="91" textAnchor="middle" className="monitor-gauge-value">{value}</text>
+      <text x="120" y="111" textAnchor="middle" className="monitor-gauge-caption">{caption}</text>
+      <text x="38" y="145" textAnchor="middle" className="monitor-gauge-scale">0%</text>
+      <text x="202" y="145" textAnchor="middle" className="monitor-gauge-scale">100%</text>
+    </svg>
+  );
+}
+
 function MetricChart({ samples, series, rangeMs, formatValue, maxValue, label }) {
   const plottedSamples = chartSamples(samples);
   if (plottedSamples.length < 2) {
@@ -151,6 +182,57 @@ function MetricCard({ title, value, detail, samples, series, rangeMs, formatValu
   );
 }
 
+function GaugeMetricCard({ title, detail, percent, value, caption, samples, series, rangeMs, formatValue, maxValue, tone }) {
+  return (
+    <article className={`monitor-metric-card monitor-gauge-card ${tone || ''}`}>
+      <div className="monitor-gauge-heading"><strong>{title}</strong><span>{detail}</span></div>
+      <ResourceGauge percent={percent} value={value} caption={caption} />
+      <MetricChart
+        samples={samples}
+        series={series}
+        rangeMs={rangeMs}
+        formatValue={formatValue}
+        maxValue={maxValue}
+        label={`${title} vaqt bo‘yicha grafigi`}
+      />
+    </article>
+  );
+}
+
+function SpeedTestCard({ tests, rangeMs, running, latest, onRun }) {
+  const speedSeries = [
+    { key: 'download', label: 'Yuklab olish', color: '#5aa3ff', value: sample => sample.downloadMbps },
+    { key: 'upload', label: 'Yuborish', color: '#ae82ff', value: sample => sample.uploadMbps }
+  ];
+  const formatMbps = value => Number.isFinite(value) ? `${value.toFixed(value < 10 ? 2 : 1)} Mbps` : '—';
+  return (
+    <article className="monitor-metric-card monitor-speed-test-card network">
+      <div className="monitor-speed-test-heading">
+        <div>
+          <h3>Server internet tezligi</h3>
+          <p>Cloudflare edge serverigacha · test qo‘lda ishga tushadi</p>
+        </div>
+        <button className="monitor-button monitor-speed-test-button" onClick={onRun} disabled={running}>
+          {running ? 'O‘lchanmoqda…' : 'Tezlikni o‘lchash'}
+        </button>
+      </div>
+      <div className="monitor-speed-test-results">
+        <div className="monitor-speed-result download"><span>↓ Yuklab olish</span><strong>{formatMbps(latest?.downloadMbps)}</strong></div>
+        <div className="monitor-speed-result upload"><span>↑ Yuborish</span><strong>{formatMbps(latest?.uploadMbps)}</strong></div>
+        <div className="monitor-speed-result latency"><span>Ping</span><strong>{Number.isFinite(latest?.latencyMs) ? `${latest.latencyMs.toFixed(0)} ms` : '—'}</strong></div>
+      </div>
+      <p className="monitor-speed-test-meta">Har test taxminan 39 MB trafik ishlatadi{latest?.timestamp ? ` · oxirgi test ${new Date(latest.timestamp).toLocaleString()}` : ''}</p>
+      <MetricChart
+        samples={tests}
+        series={speedSeries}
+        rangeMs={rangeMs}
+        formatValue={formatMbps}
+        label="Server internet tezligining tarixiy grafigi"
+      />
+    </article>
+  );
+}
+
 function containerIdMatches(sampleId, containerId) {
   return sampleId === containerId
     || (typeof sampleId === 'string' && typeof containerId === 'string'
@@ -234,6 +316,8 @@ function ContainerRow({ container, selected, onSelect, history }) {
 export default function MonitorDashboard({ onBack, onSessionExpired, containers = [] }) {
   const [snapshot, setSnapshot] = useState(null);
   const [history, setHistory] = useState([]);
+  const [speedTests, setSpeedTests] = useState([]);
+  const [latestSpeedTest, setLatestSpeedTest] = useState(null);
   const [rangeKey, setRangeKey] = useState('6h');
   const [customFrom, setCustomFrom] = useState(() => dateTimeInputValue(new Date(Date.now() - 6 * HOUR_MS)));
   const [customTo, setCustomTo] = useState(() => dateTimeInputValue(new Date()));
@@ -241,6 +325,7 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
   const [error, setError] = useState('');
   const [snapshotLoading, setSnapshotLoading] = useState(true);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [speedTestLoading, setSpeedTestLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [selectedContainerId, setSelectedContainerId] = useState('');
   const snapshotBusy = useRef(false);
@@ -305,6 +390,9 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || `Tarixni olib bo‘lmadi (${response.status})`);
       setHistory(body.samples || []);
+      const tests = body.speedTests || [];
+      setSpeedTests(tests);
+      setLatestSpeedTest(tests[tests.length - 1] || null);
       setError('');
     } catch (requestError) {
       setError(requestError.message || 'Tarixiy ko‘rsatkichlarni olib bo‘lmadi');
@@ -313,6 +401,30 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
       setHistoryLoading(false);
     }
   }, [rangeKey, customRange]);
+
+  const runSpeedTest = useCallback(async () => {
+    if (speedTestLoading) return;
+    setSpeedTestLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/api/monitor/speedtest`, {
+        method: 'POST',
+        headers: authHeaders()
+      });
+      if (response.status === 401) {
+        onSessionExpiredRef.current();
+        return;
+      }
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Tezlik testi bajarilmadi (${response.status})`);
+      setLatestSpeedTest(body);
+      setSpeedTests(current => [...current.filter(item => item.timestamp !== body.timestamp), body].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)));
+      setError('');
+    } catch (requestError) {
+      setError(requestError.message || 'Internet tezligini o‘lchab bo‘lmadi');
+    } finally {
+      setSpeedTestLoading(false);
+    }
+  }, [speedTestLoading]);
 
   const refreshAll = useCallback(() => {
     refreshSnapshot();
@@ -336,6 +448,9 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
     ? Math.max(1, (customRange?.to || Date.now()) - (customRange?.from || Date.now() - HOUR_MS))
     : (RANGE_OPTIONS.find(option => option.id === rangeKey)?.ms || 6 * HOUR_MS);
   const host = snapshot?.host;
+  const loadPercent = host?.cpu?.cores
+    ? (Number(host.cpu.loadAvg?.[0]) / host.cpu.cores) * 100
+    : null;
   const sortedContainers = useMemo(() => [...containers].sort((a, b) => {
     if ((a.state === 'running') !== (b.state === 'running')) return a.state === 'running' ? -1 : 1;
     return Number(b.cpuPercent || 0) - Number(a.cpuPercent || 0);
@@ -435,11 +550,13 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
           <div><h2>Server resurslari</h2><p>Joriy qiymatlar va tanlangan davr grafigi</p></div>
           <span className="monitor-sample-count">{history.length.toLocaleString()} o‘lchov</span>
         </div>
-        <div className="monitor-metric-grid">
-          <MetricCard
+        <div className="monitor-metric-grid monitor-gauge-grid">
+          <GaugeMetricCard
             title="CPU bandligi"
             value={formatPercent(host?.cpu?.percent)}
-            detail={`${host?.cpu?.cores ?? '—'} yadro · load ${host?.cpu?.loadAvg?.[0]?.toFixed?.(2) ?? '—'}`}
+            percent={host?.cpu?.percent}
+            caption="CPU Busy"
+            detail={`${host?.cpu?.cores ?? '—'} yadro`}
             samples={history}
             series={serverCpuSeries}
             rangeMs={rangeMs}
@@ -447,9 +564,28 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
             maxValue={100}
             tone="cpu"
           />
-          <MetricCard
+          <GaugeMetricCard
+            title="Tizim yuklamasi"
+            value={formatPercent(loadPercent)}
+            percent={loadPercent}
+            caption="System Load"
+            detail={`load ${host?.cpu?.loadAvg?.[0]?.toFixed?.(2) ?? '—'} · ${host?.cpu?.cores ?? '—'} yadro`}
+            samples={history}
+            series={[{ key: 'load', label: 'Load', color: '#f4a340', value: sample => {
+              const load = sample.host?.cpu?.loadAvg?.[0];
+              const cores = sample.host?.cpu?.cores;
+              return Number.isFinite(load) && cores ? (load / cores) * 100 : null;
+            } }]}
+            rangeMs={rangeMs}
+            formatValue={formatPercent}
+            maxValue={100}
+            tone="load"
+          />
+          <GaugeMetricCard
             title="Xotira (RAM)"
             value={formatPercent(host?.memory?.percent)}
+            percent={host?.memory?.percent}
+            caption="RAM Used"
             detail={`${formatBytes(host?.memory?.used)} / ${formatBytes(host?.memory?.total)} ishlatilgan`}
             samples={history}
             series={serverMemorySeries}
@@ -458,9 +594,24 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
             maxValue={100}
             tone="memory"
           />
-          <MetricCard
-            title="Disk bandligi"
+          <GaugeMetricCard
+            title="Swap ishlatilishi"
+            value={formatPercent(host?.swap?.percent)}
+            percent={host?.swap?.percent}
+            caption="SWAP Used"
+            detail={`${formatBytes(host?.swap?.used)} / ${formatBytes(host?.swap?.total)}`}
+            samples={history}
+            series={[{ key: 'swap', label: 'Swap', color: '#ad7bff', value: sample => sample.host?.swap?.percent }]}
+            rangeMs={rangeMs}
+            formatValue={formatPercent}
+            maxValue={100}
+            tone="swap"
+          />
+          <GaugeMetricCard
+            title="Root disk bandligi"
             value={formatPercent(host?.disk?.percent)}
+            percent={host?.disk?.percent}
+            caption="Root FS Used"
             detail={`${formatBytes(host?.disk?.used)} / ${formatBytes(host?.disk?.total)} · ${formatBytes(host?.disk?.available)} bo‘sh`}
             samples={history}
             series={serverDiskSeries}
@@ -469,8 +620,16 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
             maxValue={100}
             tone="disk"
           />
+        </div>
+      </section>
+
+      <section className="monitor-section">
+        <div className="monitor-section-heading">
+          <div><h2>Tarmoq</h2><p>Joriy trafik oqimi va serverdan internet tezligi</p></div>
+        </div>
+        <div className="monitor-network-grid">
           <MetricCard
-            title="Tarmoq tezligi"
+            title="Joriy tarmoq trafigi"
             value={hostNetworkValue}
             detail={networkScope}
             samples={history}
@@ -479,6 +638,7 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
             formatValue={formatRate}
             tone="network"
           />
+          <SpeedTestCard tests={speedTests} rangeMs={rangeMs} running={speedTestLoading} latest={latestSpeedTest} onRun={runSpeedTest} />
         </div>
         {history.length === 0 && !historyLoading && <p className="monitor-history-empty">Hozircha tanlangan davr uchun saqlangan o‘lchov yo‘q. Yangi tarix keyingi daqiqalik o‘lchovlardan yig‘iladi.</p>}
       </section>

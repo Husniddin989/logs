@@ -5,7 +5,8 @@ const {
   createHostCollector,
   containerCpuPercent,
   containerMemory,
-  readMemAvailable
+  readMemAvailable,
+  readSwapUsage
 } = require('../src/metrics');
 const {
   createAlerter,
@@ -198,6 +199,18 @@ describe('metrics', () => {
     });
     // (4000 - 3000) / 4000, not (4000 - 500) / 4000
     assert.equal((await collector.collect()).memory.percent, 25);
+  });
+
+  test('Linux swap usage is derived from SwapTotal and SwapFree', () => {
+    const meminfo = 'SwapTotal:       2048 kB\nSwapFree:         512 kB\n';
+    assert.deepEqual(readSwapUsage(() => meminfo), {
+      total: 2048 * 1024,
+      used: 1536 * 1024,
+      free: 512 * 1024,
+      percent: 75
+    });
+    assert.equal(readSwapUsage(() => 'MemTotal: 1000 kB\n'), null);
+    assert.equal(readSwapUsage(() => { throw new Error('ENOENT'); }), null);
   });
 
   test('disk read errors do not break collection', async () => {

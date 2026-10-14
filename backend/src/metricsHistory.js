@@ -60,6 +60,7 @@ function historyShape(snapshot, timestamp, previous) {
       hostname: host.hostname || null,
       cpu: host.cpu || null,
       memory: host.memory || null,
+      swap: host.swap || null,
       disk: host.disk || null,
       network: hostNetwork
     },
