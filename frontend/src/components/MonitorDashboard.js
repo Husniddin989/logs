@@ -1,10 +1,17 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './MonitorDashboard.css';
 
 const API_URL = process.env.REACT_APP_API_URL || '';
-const POLL_INTERVAL_MS = 10000;
-const MAX_HISTORY = 120;
-const HISTORY_KEY = 'docker-log-viewer-monitor-history';
+const SNAPSHOT_INTERVAL_MS = 30000;
+const HISTORY_INTERVAL_MS = 60000;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const RANGE_OPTIONS = [
+  { id: '1h', label: '1 soat', ms: HOUR_MS },
+  { id: '6h', label: '6 soat', ms: 6 * HOUR_MS },
+  { id: '24h', label: '24 soat', ms: DAY_MS },
+  { id: '72h', label: '3 kun', ms: 3 * DAY_MS }
+];
 
 function authHeaders() {
   return { Authorization: `Bearer ${localStorage.getItem('token') || ''}` };
@@ -12,7 +19,7 @@ function authHeaders() {
 
 function formatBytes(value) {
   if (!Number.isFinite(value)) return '—';
-  if (value < 1024) return `${value} B`;
+  if (value < 1024) return `${value.toFixed(value < 10 ? 1 : 0)} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
   let amount = value;
   let unit = -1;
@@ -23,205 +30,496 @@ function formatBytes(value) {
   return `${amount.toFixed(1)} ${units[unit]}`;
 }
 
-function percentage(value) {
-  return Number.isFinite(value) ? `${value.toFixed(1)}%` : 'Kutilmoqda';
+function formatRate(value) {
+  return Number.isFinite(value) ? `${formatBytes(value)}/s` : 'Yig‘ilmoqda';
 }
 
-function MetricChart({ values, color }) {
-  const points = values
-    .map((value, index) => ({ value, index }))
-    .filter(point => Number.isFinite(point.value));
+function formatPercent(value) {
+  return Number.isFinite(value) ? `${value.toFixed(1)}%` : '—';
+}
 
-  if (points.length < 2) {
-    return <div className="monitor-chart-empty">Ko‘rsatkichlar yig‘ilmoqda…</div>;
+function dateTimeInputValue(value) {
+  const adjusted = new Date(value.getTime() - value.getTimezoneOffset() * 60000);
+  return adjusted.toISOString().slice(0, 16);
+}
+
+function axisTime(timestamp, rangeMs) {
+  const date = new Date(timestamp);
+  if (rangeMs > DAY_MS) {
+    return date.toLocaleDateString(undefined, { day: '2-digit', month: 'short' });
+  }
+  return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+function chartSamples(samples, limit = 700) {
+  if (samples.length <= limit) return samples;
+  const step = Math.ceil((samples.length - 1) / (limit - 1));
+  const result = samples.filter((_, index) => index % step === 0);
+  if (result[result.length - 1] !== samples[samples.length - 1]) result.push(samples[samples.length - 1]);
+  return result;
+}
+
+function MetricChart({ samples, series, rangeMs, formatValue, maxValue, label }) {
+  const plottedSamples = chartSamples(samples);
+  if (plottedSamples.length < 2) {
+    return <div className="monitor-chart-empty">Tarix yig‘ilmoqda. Grafik uchun kamida 2 ta o‘lchov kerak.</div>;
   }
 
-  const line = points.map((point, index) => {
-    const x = (index / (points.length - 1)) * 100;
-    const y = 96 - (Math.max(0, Math.min(100, point.value)) / 100) * 88;
-    return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
-  }).join(' ');
-  const area = `${line} L 100 100 L 0 100 Z`;
+  const width = 760;
+  const height = 212;
+  const left = 62;
+  const right = 12;
+  const top = 12;
+  const bottom = 32;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const start = Date.parse(plottedSamples[0].timestamp);
+  const end = Date.parse(plottedSamples[plottedSamples.length - 1].timestamp);
+  const span = Math.max(1, end - start);
+  const allValues = plottedSamples.flatMap(sample => series
+    .map(item => item.value(sample))
+    .filter(Number.isFinite));
+  const ceiling = maxValue || Math.max(1, ...allValues) * 1.12;
+  const yFor = value => top + plotHeight - (Math.max(0, value) / ceiling) * plotHeight;
+  const xFor = sample => left + ((Date.parse(sample.timestamp) - start) / span) * plotWidth;
+
+  const paths = series.flatMap(item => {
+    const segments = [];
+    let segment = [];
+    plottedSamples.forEach(sample => {
+      const value = item.value(sample);
+      if (Number.isFinite(value)) {
+        segment.push(`${segment.length ? 'L' : 'M'} ${xFor(sample).toFixed(1)} ${yFor(value).toFixed(1)}`);
+      } else if (segment.length) {
+        segments.push(segment.join(' '));
+        segment = [];
+      }
+    });
+    if (segment.length) segments.push(segment.join(' '));
+    return segments.map((d, index) => <path key={`${item.key}-${index}`} d={d} fill="none" stroke={item.color} strokeWidth="2.4" vectorEffect="non-scaling-stroke" />);
+  });
+
+  const xTicks = Array.from({ length: 5 }, (_, index) => {
+    const timestamp = new Date(start + (span * index) / 4).toISOString();
+    return { timestamp, position: index / 4 };
+  });
 
   return (
-    <svg className="monitor-chart" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Oxirgi o‘lchovlar grafigi">
-      <path className="monitor-chart-grid" d="M0 8 H100 M0 52 H100 M0 96 H100" />
-      <path d={area} fill={color} opacity="0.12" />
-      <path d={line} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke" />
-    </svg>
+    <div className="monitor-chart-wrap">
+      <svg className="monitor-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}>
+        {[0, 0.25, 0.5, 0.75, 1].map(fraction => {
+          const y = top + plotHeight - fraction * plotHeight;
+          return (
+            <g key={fraction}>
+              <line x1={left} x2={width - right} y1={y} y2={y} className="monitor-chart-grid" />
+              <text x={left - 9} y={y + 4} textAnchor="end" className="monitor-chart-axis-label">{formatValue(ceiling * fraction)}</text>
+            </g>
+          );
+        })}
+        {xTicks.map((tick, index) => {
+          const x = left + tick.position * plotWidth;
+          return <text key={`${tick.timestamp}-${index}`} x={x} y={height - 7} textAnchor={index === 0 ? 'start' : index === 4 ? 'end' : 'middle'} className="monitor-chart-axis-label">{axisTime(tick.timestamp, rangeMs)}</text>;
+        })}
+        {paths}
+      </svg>
+      {series.length > 1 && (
+        <div className="monitor-chart-legend">
+          {series.map(item => <span key={item.key}><i style={{ backgroundColor: item.color }} />{item.label}</span>)}
+        </div>
+      )}
+    </div>
   );
 }
 
-function MetricCard({ title, value, detail, values, color }) {
+function MetricCard({ title, value, detail, samples, series, rangeMs, formatValue, maxValue, tone }) {
   return (
-    <article className="monitor-metric-card">
+    <article className={`monitor-metric-card ${tone || ''}`}>
       <div className="monitor-metric-heading">
         <span>{title}</span>
         <strong>{value}</strong>
       </div>
-      <div className="monitor-metric-detail">{detail}</div>
-      <MetricChart values={values} color={color} />
-      <div className="monitor-chart-caption">Oxirgi 20 daqiqa · 10 soniyada yangilanadi</div>
+      <p className="monitor-metric-detail">{detail}</p>
+      <MetricChart
+        samples={samples}
+        series={series}
+        rangeMs={rangeMs}
+        formatValue={formatValue}
+        maxValue={maxValue}
+        label={`${title} vaqt bo‘yicha grafigi`}
+      />
     </article>
   );
 }
 
-function ContainerRow({ container }) {
+function ContainerRow({ container, selected, onSelect }) {
   const running = container.state === 'running';
-  const memoryPercent = container.memory?.percent;
   return (
-    <tr>
+    <tr className={selected ? 'is-selected' : ''} onClick={onSelect}>
       <td>
-        <div className="monitor-container-name">{container.name}</div>
-        <div className="monitor-container-id">{container.shortId}</div>
+        <button className="monitor-container-select" type="button" onClick={onSelect}>
+          <span className={`monitor-container-dot ${running ? 'running' : ''}`} />
+          <span>
+            <strong>{container.name}</strong>
+            <small>{container.id}</small>
+          </span>
+        </button>
       </td>
-      <td><span className={`monitor-state ${running ? 'running' : 'stopped'}`}>{container.state}</span></td>
-      <td>{running ? percentage(container.cpuPercent) : '—'}</td>
+      <td><span className={`monitor-state ${running ? 'running' : 'stopped'}`}>{running ? 'Ishlayapti' : 'To‘xtagan'}</span></td>
+      <td>{running ? formatPercent(Number(container.cpuPercent)) : '—'}</td>
       <td>
-        {running && container.memory ? (
-          <div className="monitor-memory-cell">
-            <div className="monitor-memory-label">
-              <span>{percentage(memoryPercent)}</span>
-              <span>{formatBytes(container.memory.used)} / {formatBytes(container.memory.limit)}</span>
-            </div>
-            <div className="monitor-progress"><span style={{ width: `${Math.min(100, Math.max(0, memoryPercent || 0))}%` }} /></div>
+        {running ? (
+          <div className="monitor-table-memory">
+            <span>{formatPercent(Number(container.memPercent))}</span>
+            <small>{formatBytes(Number(container.memUsage))} / {formatBytes(Number(container.memLimit))}</small>
           </div>
         ) : '—'}
       </td>
-      <td className="monitor-container-status">{container.health || container.status || '—'}</td>
+      <td>{formatBytes(Number(container.networkRxBytes))}</td>
+      <td>{formatBytes(Number(container.networkTxBytes))}</td>
     </tr>
   );
 }
 
 export default function MonitorDashboard({ onBack, onSessionExpired, containers = [] }) {
   const [snapshot, setSnapshot] = useState(null);
-  const [history, setHistory] = useState(() => {
-    try {
-      const cutoff = Date.now() - MAX_HISTORY * POLL_INTERVAL_MS;
-      return JSON.parse(sessionStorage.getItem(HISTORY_KEY) || '[]')
-        .filter(item => Number.isFinite(Date.parse(item.timestamp)) && Date.parse(item.timestamp) >= cutoff)
-        .slice(-MAX_HISTORY);
-    } catch {
-      return [];
-    }
-  });
+  const [history, setHistory] = useState([]);
+  const [rangeKey, setRangeKey] = useState('6h');
+  const [customFrom, setCustomFrom] = useState(() => dateTimeInputValue(new Date(Date.now() - 6 * HOUR_MS)));
+  const [customTo, setCustomTo] = useState(() => dateTimeInputValue(new Date()));
+  const [customRange, setCustomRange] = useState(null);
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
-  const busy = useRef(false);
+  const [snapshotLoading, setSnapshotLoading] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const [selectedContainerId, setSelectedContainerId] = useState('');
+  const snapshotBusy = useRef(false);
+  const historyBusy = useRef(false);
+  const onSessionExpiredRef = useRef(onSessionExpired);
 
-  useEffect(() => {
-    sessionStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-  }, [history]);
+  useEffect(() => { onSessionExpiredRef.current = onSessionExpired; }, [onSessionExpired]);
 
-  const refresh = useCallback(async () => {
-    if (busy.current) return;
-    busy.current = true;
+  const refreshSnapshot = useCallback(async () => {
+    if (snapshotBusy.current) return;
+    snapshotBusy.current = true;
     try {
       const response = await fetch(`${API_URL}/api/monitor/snapshot`, { headers: authHeaders() });
       if (response.status === 401) {
-        onSessionExpired();
+        onSessionExpiredRef.current();
         return;
       }
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || `Monitoring so‘rovi bajarilmadi (${response.status})`);
-      }
-      const data = await response.json();
-      setSnapshot(data);
-      setHistory(previous => [...previous, data].slice(-MAX_HISTORY));
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Monitor so‘rovi bajarilmadi (${response.status})`);
+      setSnapshot(body);
+      setUpdatedAt(new Date());
       setError('');
     } catch (requestError) {
-      setError(requestError.message || 'Monitoring ma’lumotlarini olib bo‘lmadi');
+      setError(requestError.message || 'Joriy ko‘rsatkichlarni olib bo‘lmadi');
     } finally {
-      busy.current = false;
-      setLoading(false);
+      snapshotBusy.current = false;
+      setSnapshotLoading(false);
     }
-  }, [onSessionExpired]);
+  }, []);
+
+  const refreshHistory = useCallback(async () => {
+    if (historyBusy.current) return;
+    let from;
+    let to;
+    if (rangeKey === 'custom') {
+      if (!customRange) return;
+      ({ from, to } = customRange);
+    } else {
+      const range = RANGE_OPTIONS.find(option => option.id === rangeKey) || RANGE_OPTIONS[1];
+      to = Date.now();
+      from = to - range.ms;
+    }
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) {
+      setError('Boshlanish va tugash vaqtini tekshiring');
+      setHistoryLoading(false);
+      return;
+    }
+    if (to - from > 3 * DAY_MS) {
+      setError('Tanlangan vaqt oralig‘i 3 kundan oshmasligi kerak');
+      setHistoryLoading(false);
+      return;
+    }
+
+    historyBusy.current = true;
+    try {
+      const query = new URLSearchParams({ from: new Date(from).toISOString(), to: new Date(to).toISOString() });
+      const response = await fetch(`${API_URL}/api/monitor/history?${query}`, { headers: authHeaders() });
+      if (response.status === 401) {
+        onSessionExpiredRef.current();
+        return;
+      }
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Tarixni olib bo‘lmadi (${response.status})`);
+      setHistory(body.samples || []);
+      setError('');
+    } catch (requestError) {
+      setError(requestError.message || 'Tarixiy ko‘rsatkichlarni olib bo‘lmadi');
+    } finally {
+      historyBusy.current = false;
+      setHistoryLoading(false);
+    }
+  }, [rangeKey, customRange]);
+
+  const refreshAll = useCallback(() => {
+    refreshSnapshot();
+    refreshHistory();
+  }, [refreshSnapshot, refreshHistory]);
 
   useEffect(() => {
-    refresh();
-    const timer = setInterval(refresh, POLL_INTERVAL_MS);
+    refreshSnapshot();
+    const timer = setInterval(refreshSnapshot, SNAPSHOT_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [refreshSnapshot]);
 
+  useEffect(() => {
+    setHistoryLoading(true);
+    refreshHistory();
+    const timer = setInterval(refreshHistory, HISTORY_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [refreshHistory]);
+
+  const rangeMs = rangeKey === 'custom'
+    ? Math.max(1, (customRange?.to || Date.now()) - (customRange?.from || Date.now() - HOUR_MS))
+    : (RANGE_OPTIONS.find(option => option.id === rangeKey)?.ms || 6 * HOUR_MS);
   const host = snapshot?.host;
-  const monitoredContainers = [...containers].sort((a, b) => {
+  const sortedContainers = useMemo(() => [...containers].sort((a, b) => {
     if ((a.state === 'running') !== (b.state === 'running')) return a.state === 'running' ? -1 : 1;
-    return (b.cpuPercent || 0) - (a.cpuPercent || 0);
-  });
+    return Number(b.cpuPercent || 0) - Number(a.cpuPercent || 0);
+  }), [containers]);
+  const containerOptions = useMemo(() => {
+    const options = new Map();
+    sortedContainers.forEach(item => {
+      const id = item.fullId || item.id;
+      options.set(id, { id, name: item.name, state: item.state });
+    });
+    history.forEach(sample => (sample.containers || []).forEach(item => {
+      if (!options.has(item.id)) options.set(item.id, { id: item.id, name: item.name, state: item.state });
+    }));
+    return [...options.values()];
+  }, [sortedContainers, history]);
+  const activeContainerId = selectedContainerId
+    || sortedContainers.find(item => item.state === 'running')?.fullId
+    || sortedContainers[0]?.fullId
+    || containerOptions[0]?.id
+    || '';
+  const activeContainer = sortedContainers.find(item => item.fullId === activeContainerId || item.id === activeContainerId);
+  const activeContainerSamples = useMemo(() => history.map(sample => ({
+    timestamp: sample.timestamp,
+    container: activeContainerId
+      ? sample.containers?.find(item => item.id === activeContainerId || item.id?.startsWith(activeContainerId)) || null
+      : null
+  })), [history, activeContainerId]);
+  const serverCpuSeries = [{ key: 'cpu', label: 'CPU', color: '#3478f6', value: sample => sample.host?.cpu?.percent }];
+  const serverMemorySeries = [{ key: 'memory', label: 'RAM', color: '#8758dc', value: sample => sample.host?.memory?.percent }];
+  const serverDiskSeries = [{ key: 'disk', label: 'Disk', color: '#14a06f', value: sample => sample.host?.disk?.percent }];
+  const serverNetworkSeries = [
+    { key: 'rx', label: 'Qabul', color: '#3478f6', value: sample => sample.host?.network?.rxBytesPerSecond },
+    { key: 'tx', label: 'Yuborish', color: '#e58a28', value: sample => sample.host?.network?.txBytesPerSecond }
+  ];
+  const containerCpuSeries = [{ key: 'cpu', label: 'CPU', color: '#3478f6', value: sample => sample.container?.cpuPercent }];
+  const containerMemorySeries = [{ key: 'memory', label: 'RAM', color: '#8758dc', value: sample => sample.container?.memory?.percent }];
+  const containerNetworkSeries = [
+    { key: 'rx', label: 'Qabul', color: '#3478f6', value: sample => sample.container?.network?.rxBytesPerSecond },
+    { key: 'tx', label: 'Yuborish', color: '#e58a28', value: sample => sample.container?.network?.txBytesPerSecond }
+  ];
+  const latestContainerSample = activeContainerSamples.slice().reverse().find(item => item.container)?.container;
+  const networkScope = host?.network?.source === 'server' ? 'Server interfeyslari' : 'Ilova tarmog‘i';
+  const hostNetworkValue = host?.network
+    ? <span className="monitor-network-value"><span>↓ {formatRate(host.network.rxBytesPerSecond)}</span><span>↑ {formatRate(host.network.txBytesPerSecond)}</span></span>
+    : 'Mavjud emas';
+
+  function applyCustomRange() {
+    const from = new Date(customFrom).getTime();
+    const to = new Date(customTo).getTime();
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from || to - from > 3 * DAY_MS) {
+      setError('Vaqt oralig‘ini to‘g‘ri tanlang (maksimum 3 kun)');
+      return;
+    }
+    setCustomRange({ from, to });
+    setRangeKey('custom');
+  }
 
   return (
-    <div className="monitor-page">
-      <div className="monitor-page-header">
-        <div>
-          <div className="monitor-eyebrow">SERVER VA DOCKER</div>
-          <h1>Monitor</h1>
-          <p>{host?.hostname || 'Server ko‘rsatkichlari va containerlar holati'}</p>
+    <main className="monitor-page">
+      <header className="monitor-page-header">
+        <div className="monitor-heading-copy">
+          <div className="monitor-brand-row">
+            <span className="monitor-brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 48 48" role="presentation">
+                <path className="monitor-brand-cube" d="M24 5 41 14.5v19L24 43 7 33.5v-19L24 5Z" />
+                <path className="monitor-brand-grid" d="M7.5 14.8 24 24l16.5-9.2M24 24v18M15 10l17 9.5v7" />
+                <path className="monitor-brand-pulse" d="m17 30 4.3-4.3 4.1 4.1 6.6-7" />
+                <circle className="monitor-brand-spark" cx="32" cy="22.8" r="2" />
+              </svg>
+            </span>
+            <span className="monitor-brand-name">
+              <strong>DOCKER LOG VIEWER</strong>
+              <small>SERVER MONITOR</small>
+            </span>
+            <span className="monitor-brand-divider" aria-hidden="true" />
+            <span className="monitor-brand-status"><i className="monitor-live-dot" /> Kuzatuv faol</span>
+          </div>
+          <h1>Resurslar holati</h1>
+          <p>{host?.hostname || 'Server va Docker containerlari'} · ko‘rsatkichlar vaqt bo‘yicha saqlanadi</p>
         </div>
         <div className="monitor-header-actions">
-          <span className="monitor-updated">{snapshot ? `Yangilandi: ${new Date(snapshot.timestamp).toLocaleTimeString()}` : 'Ulanmoqda…'}</span>
-          <button className="monitor-refresh-btn" onClick={refresh} disabled={loading}>Yangilash</button>
-          <button className="monitor-back-btn" onClick={onBack}>Loglarga qaytish</button>
+          <div className="monitor-updated"><span>Oxirgi yangilanish</span><strong>{updatedAt ? updatedAt.toLocaleTimeString() : 'Ulanmoqda…'}</strong></div>
+          <button className="monitor-button monitor-refresh-btn" onClick={refreshAll} disabled={snapshotLoading || historyLoading}>Yangilash</button>
+          <button className="monitor-button monitor-back-btn" onClick={onBack}>Loglarga qaytish</button>
         </div>
-      </div>
+      </header>
 
-      {error && <div className="monitor-error">{error}</div>}
+      {error && <div className="monitor-error" role="alert">{error}</div>}
 
-      <section className="monitor-section">
-        <div className="monitor-section-heading">
-          <div><h2>Server resurslari</h2><p>CPU, xotira va disk bandligi</p></div>
-          <span>{history.length} ta o‘lchov</span>
+      <section className="monitor-range-panel" aria-label="Tarix oralig‘ini tanlash">
+        <div className="monitor-range-copy">
+          <strong>Vaqt oralig‘i</strong>
+          <span>Tarix ko‘pi bilan 3 kun saqlanadi · har daqiqada o‘lchov</span>
         </div>
-        <div className="monitor-metric-grid">
-          <MetricCard
-            title="CPU"
-            value={percentage(host?.cpu?.percent)}
-            detail={`${host?.cpu?.cores ?? '—'} yadro · load ${host?.cpu?.loadAvg?.[0]?.toFixed?.(2) ?? '—'}`}
-            values={history.map(item => item.host?.cpu?.percent)}
-            color="#58a6ff"
-          />
-          <MetricCard
-            title="RAM"
-            value={percentage(host?.memory?.percent)}
-            detail={`${formatBytes(host?.memory?.used)} / ${formatBytes(host?.memory?.total)} · bo‘sh ${formatBytes(host?.memory?.free)}`}
-            values={history.map(item => item.host?.memory?.percent)}
-            color="#a371f7"
-          />
-          <MetricCard
-            title="Disk"
-            value={percentage(host?.disk?.percent)}
-            detail={`${formatBytes(host?.disk?.used)} / ${formatBytes(host?.disk?.total)} · bo‘sh ${formatBytes(host?.disk?.available)}`}
-            values={history.map(item => item.host?.disk?.percent)}
-            color="#3fb950"
-          />
+        <div className="monitor-range-controls">
+          <div className="monitor-range-presets">
+            {RANGE_OPTIONS.map(option => (
+              <button key={option.id} className={`monitor-range-button ${rangeKey === option.id ? 'active' : ''}`} onClick={() => setRangeKey(option.id)}>
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="monitor-custom-range">
+            <label>dan <input type="datetime-local" value={customFrom} onChange={event => setCustomFrom(event.target.value)} /></label>
+            <label>gacha <input type="datetime-local" value={customTo} onChange={event => setCustomTo(event.target.value)} /></label>
+            <button className={`monitor-range-button apply ${rangeKey === 'custom' ? 'active' : ''}`} onClick={applyCustomRange}>Tanlash</button>
+          </div>
         </div>
       </section>
 
-      <section className="monitor-section monitor-containers-section">
+      <section className="monitor-section">
         <div className="monitor-section-heading">
-          <div><h2>Containerlar</h2><p>CPU va xotira sarfi bo‘yicha joriy holat</p></div>
-          <span>{monitoredContainers.filter(item => item.state === 'running').length} ishlayapti / {monitoredContainers.length} jami</span>
+          <div><h2>Server resurslari</h2><p>Joriy qiymatlar va tanlangan davr grafigi</p></div>
+          <span className="monitor-sample-count">{history.length.toLocaleString()} o‘lchov</span>
+        </div>
+        <div className="monitor-metric-grid">
+          <MetricCard
+            title="CPU bandligi"
+            value={formatPercent(host?.cpu?.percent)}
+            detail={`${host?.cpu?.cores ?? '—'} yadro · load ${host?.cpu?.loadAvg?.[0]?.toFixed?.(2) ?? '—'}`}
+            samples={history}
+            series={serverCpuSeries}
+            rangeMs={rangeMs}
+            formatValue={formatPercent}
+            maxValue={100}
+            tone="cpu"
+          />
+          <MetricCard
+            title="Xotira (RAM)"
+            value={formatPercent(host?.memory?.percent)}
+            detail={`${formatBytes(host?.memory?.used)} / ${formatBytes(host?.memory?.total)} ishlatilgan`}
+            samples={history}
+            series={serverMemorySeries}
+            rangeMs={rangeMs}
+            formatValue={formatPercent}
+            maxValue={100}
+            tone="memory"
+          />
+          <MetricCard
+            title="Disk bandligi"
+            value={formatPercent(host?.disk?.percent)}
+            detail={`${formatBytes(host?.disk?.used)} / ${formatBytes(host?.disk?.total)} · ${formatBytes(host?.disk?.available)} bo‘sh`}
+            samples={history}
+            series={serverDiskSeries}
+            rangeMs={rangeMs}
+            formatValue={formatPercent}
+            maxValue={100}
+            tone="disk"
+          />
+          <MetricCard
+            title="Tarmoq tezligi"
+            value={hostNetworkValue}
+            detail={networkScope}
+            samples={history}
+            series={serverNetworkSeries}
+            rangeMs={rangeMs}
+            formatValue={formatRate}
+            tone="network"
+          />
+        </div>
+        {history.length === 0 && !historyLoading && <p className="monitor-history-empty">Hozircha tanlangan davr uchun saqlangan o‘lchov yo‘q. Yangi tarix keyingi daqiqalik o‘lchovlardan yig‘iladi.</p>}
+      </section>
+
+      <section className="monitor-section">
+        <div className="monitor-section-heading monitor-container-heading">
+          <div><h2>Containerlar</h2><p>Joriy CPU, RAM va ishga tushgandan beri tarmoq trafigi</p></div>
+          <span className="monitor-sample-count">{sortedContainers.filter(item => item.state === 'running').length} / {sortedContainers.length} ishlayapti</span>
         </div>
         <div className="monitor-table-wrap">
           <table className="monitor-table">
-            <thead><tr><th>Container</th><th>Holat</th><th>CPU</th><th>RAM</th><th>Health / status</th></tr></thead>
+            <thead><tr><th>Container</th><th>Holat</th><th>CPU</th><th>RAM</th><th>Qabul qildi</th><th>Yubordi</th></tr></thead>
             <tbody>
-              {monitoredContainers.map(container => (
-                <ContainerRow
-                  key={container.id}
-                  container={{
-                    ...container,
-                    shortId: container.id,
-                    cpuPercent: Number(container.cpuPercent),
-                    memory: { used: container.memUsage, limit: container.memLimit, percent: Number(container.memPercent) }
-                  }}
-                />
-              ))}
-              {!monitoredContainers.length && !loading && <tr><td colSpan="5" className="monitor-empty">Container topilmadi</td></tr>}
+              {sortedContainers.map(container => {
+                const id = container.fullId || container.id;
+                return <ContainerRow key={id} container={container} selected={id === activeContainerId} onSelect={() => setSelectedContainerId(id)} />;
+              })}
+              {!sortedContainers.length && !snapshotLoading && <tr><td colSpan="6" className="monitor-empty">Container topilmadi</td></tr>}
             </tbody>
           </table>
         </div>
       </section>
-    </div>
+
+      <section className="monitor-section monitor-container-history">
+        <div className="monitor-section-heading">
+          <div><h2>Container tarixi</h2><p>{activeContainer?.name || latestContainerSample?.name || 'Tanlangan container'} · tanlangan vaqt bo‘yicha CPU, RAM va network</p></div>
+          {containerOptions.length > 0 && (
+            <label className="monitor-container-picker">Container
+              <select value={activeContainerId} onChange={event => setSelectedContainerId(event.target.value)}>
+                {containerOptions.map(container => <option key={container.id} value={container.id}>{container.name}{container.state === 'removed' ? ' (o‘chirilgan)' : ''}</option>)}
+              </select>
+            </label>
+          )}
+        </div>
+        <div className="monitor-metric-grid container-metric-grid">
+          <MetricCard
+            title="Container CPU"
+            value={activeContainer ? formatPercent(Number(activeContainer.cpuPercent)) : formatPercent(latestContainerSample?.cpuPercent)}
+            detail={activeContainer?.name || latestContainerSample?.name || 'Container tanlanmagan'}
+            samples={activeContainerSamples}
+            series={containerCpuSeries}
+            rangeMs={rangeMs}
+            formatValue={formatPercent}
+            maxValue={100}
+            tone="cpu"
+          />
+          <MetricCard
+            title="Container RAM"
+            value={activeContainer ? formatPercent(Number(activeContainer.memPercent)) : formatPercent(latestContainerSample?.memory?.percent)}
+            detail={activeContainer
+              ? `${formatBytes(Number(activeContainer.memUsage))} / ${formatBytes(Number(activeContainer.memLimit))}`
+              : latestContainerSample?.memory ? `${formatBytes(latestContainerSample.memory.used)} / ${formatBytes(latestContainerSample.memory.limit)} · so‘nggi o‘lchov` : '—'}
+            samples={activeContainerSamples}
+            series={containerMemorySeries}
+            rangeMs={rangeMs}
+            formatValue={formatPercent}
+            maxValue={100}
+            tone="memory"
+          />
+          <MetricCard
+            title="Container tarmog‘i"
+            value={latestContainerSample?.network
+              ? <span className="monitor-network-value"><span>↓ {formatRate(latestContainerSample.network.rxBytesPerSecond)}</span><span>↑ {formatRate(latestContainerSample.network.txBytesPerSecond)}</span></span>
+              : 'Yig‘ilmoqda'}
+            detail={activeContainer?.name || latestContainerSample?.name || '—'}
+            samples={activeContainerSamples}
+            series={containerNetworkSeries}
+            rangeMs={rangeMs}
+            formatValue={formatRate}
+            tone="network"
+          />
+        </div>
+        {activeContainer && activeContainerSamples.every(item => !item.container) && !historyLoading && (
+          <p className="monitor-history-empty">Bu container uchun tanlangan davrda saqlangan tarix yo‘q. Yangi o‘lchovlar keyingi daqiqada paydo bo‘ladi.</p>
+        )}
+      </section>
+    </main>
   );
 }

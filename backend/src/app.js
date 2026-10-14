@@ -11,6 +11,8 @@ const { parseDockerLogs, demuxDockerStream, framesToLogLines } = require('./dock
 const { validatePassword, hashPassword, verifyPassword } = require('./passwords');
 const { TokenError, PASSWORD_CHANGE_SCOPE, CONTAINER_ACTIONS_SCOPE } = require('./tokens');
 const { createContainerActions, ActionError } = require('./containerActions');
+const { containerNetwork } = require('./metrics');
+const { RETENTION_MS } = require('./metricsHistory');
 const {
   applySettingsUpdate,
   publicSettings,
@@ -63,6 +65,7 @@ function createApp({
   // createContainerActions(...) result; off unless given
   containerActions = null,
   hostCollector = null,
+  metricsHistory = null,
   frontendBuildDir = process.env.FRONTEND_BUILD_DIR || null,
   wsRevalidateIntervalMs = 30 * 1000,
   wsAuthTimeoutMs = 10 * 1000
@@ -917,7 +920,9 @@ function createApp({
           cpuPercent: 0,
           memUsage: 0,
           memLimit: 0,
-          memPercent: 0
+          memPercent: 0,
+          networkRxBytes: 0,
+          networkTxBytes: 0
         };
 
         // Get real-time stats for running containers
@@ -945,6 +950,9 @@ function createApp({
             if (baseInfo.memLimit > 0) {
               baseInfo.memPercent = ((baseInfo.memUsage / baseInfo.memLimit) * 100).toFixed(2);
             }
+            const network = containerNetwork(stats);
+            baseInfo.networkRxBytes = network.rxBytes;
+            baseInfo.networkTxBytes = network.txBytes;
           } catch (statsError) {
             console.error(`Stats error for ${c.Id}:`, statsError.message);
           }
@@ -1382,6 +1390,36 @@ function createApp({
       console.error('Monitor snapshot error:', error);
       res.status(500).json({ error: 'Failed to collect monitor snapshot' });
     }
+  });
+
+  app.get('/api/monitor/history', authMiddleware, adminMiddleware, (req, res) => {
+    if (!metricsHistory) {
+      return res.status(503).json({ error: 'Monitoring history is not configured' });
+    }
+
+    const now = Date.now();
+    const requestedTo = req.query.to === undefined ? now : Date.parse(req.query.to);
+    const requestedFrom = req.query.from === undefined
+      ? requestedTo - 60 * 60 * 1000
+      : Date.parse(req.query.from);
+    if (!Number.isFinite(requestedFrom) || !Number.isFinite(requestedTo)) {
+      return res.status(400).json({ error: 'from va to sanalari ISO formatida bo‘lishi kerak' });
+    }
+    if (requestedTo < requestedFrom) {
+      return res.status(400).json({ error: 'to sanasi from sanasidan keyin bo‘lishi kerak' });
+    }
+    if (requestedTo - requestedFrom > RETENTION_MS) {
+      return res.status(400).json({ error: 'Tarix oralig‘i 72 soatdan oshmasligi kerak' });
+    }
+
+    const from = Math.max(requestedFrom, now - RETENTION_MS);
+    res.json({
+      from: new Date(from).toISOString(),
+      to: new Date(requestedTo).toISOString(),
+      retentionHours: RETENTION_MS / (60 * 60 * 1000),
+      sampleIntervalSeconds: metricsHistory.sampleIntervalMs / 1000,
+      samples: metricsHistory.query(from, requestedTo)
+    });
   });
 
   // Docker info (auth required). Non-admins only get counts over the

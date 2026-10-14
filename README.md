@@ -14,8 +14,9 @@ Real-time Docker container log viewer with user authentication and access contro
 - Container stats monitoring (CPU, RAM, Uptime, Size)
 - Admin container actions: start, stop, restart, delete (password re-entry required)
 - Telegram alerts for the server, containers, Postgres and Redis
-- Admin Monitor dashboard with server CPU/RAM/disk charts and live container usage
-- Dark theme UI
+- Admin Monitor dashboard with server/container CPU, RAM, disk and network charts
+- Monitor history is sampled every minute and retained for up to 72 hours in the `users-data` volume
+- Dark theme log viewer and light monitor dashboard
 
 ## Quick Start
 
@@ -174,7 +175,8 @@ services:
 | `/api/containers/:id/actions` | POST | Admin + `X-Action-Token`: `{ "action": "start" \| "stop" \| "restart" \| "remove", "confirm": "<name>" }` (confirm only for remove) |
 | `/api/container-actions` | GET | Admin: whether container actions are enabled |
 | `/api/docker/info` | GET | Docker system info |
-| `/api/monitor/snapshot` | GET (Admin) | Host CPU, RAM and disk metrics |
+| `/api/monitor/snapshot` | GET (Admin) | Current host CPU, RAM, disk and network metrics |
+| `/api/monitor/history?from=<ISO>&to=<ISO>` | GET (Admin) | Time-filtered host and container metrics; at most 72 hours |
 
 ### WebSocket
 
@@ -245,7 +247,8 @@ docker-log-viewer/
 │   │   ├── access.js         # Container reference validation and grants
 │   │   ├── tokens.js         # JWT issue/verify/revoke
 │   │   ├── audit.js          # JSON-lines audit log
-│   │   ├── monitor.js, metrics.js, alerting.js, telegram.js   # Telegram alerts
+│   │   ├── monitor.js, metrics.js, metricsHistory.js         # Resource collection and history
+│   │   ├── alerting.js, telegram.js                          # Telegram alerts
 │   │   ├── services.js                                        # Postgres / Redis probes
 │   │   ├── alertSettings.js, alertService.js                  # UI-managed alert settings
 │   │   ├── config.js, bootstrap.js, passwords.js, loginThrottle.js, userStore.js

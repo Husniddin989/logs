@@ -10,6 +10,7 @@ const { createAlertSettingsStore, defaultsFromConfig } = require('./alertSetting
 const { createAlertService } = require('./alertService');
 const { createContainerActions } = require('./containerActions');
 const { createHostCollector } = require('./metrics');
+const { createMetricsHistory } = require('./metricsHistory');
 
 async function main() {
   const config = loadConfig(process.env);
@@ -48,10 +49,19 @@ async function main() {
     diskPath: config.alerts.diskPath,
     apiBase: config.alerts.telegram.apiBase
   });
-  const hostCollector = createHostCollector({
+  const hostCollectorOptions = {
     diskPath: config.alerts.diskPath,
+    networkPath: process.env.HOST_PROC_NET_DEV || '/host/proc/net/dev',
     hostname: config.alerts.hostname || null
+  };
+  const hostCollector = createHostCollector(hostCollectorOptions);
+  const metricsHistory = createMetricsHistory({
+    filePath: path.join(config.dataDir, 'metrics-history.ndjson'),
+    hostCollector: createHostCollector(hostCollectorOptions),
+    docker,
+    logger: console
   });
+  await metricsHistory.initialize();
 
   const { server } = createApp({
     docker, userStore, tokens, audit,
@@ -60,6 +70,7 @@ async function main() {
     alerts: { store: alertStore, service: alertService },
     containerActions: createContainerActions({ docker, ...config.containerActions }),
     hostCollector,
+    metricsHistory,
   });
 
   console.log(`[startup] container actions ${config.containerActions.enabled ? 'enabled for admins' : 'disabled'}`);
@@ -68,6 +79,8 @@ async function main() {
     console.log(`Docker Log Viewer API running on port ${config.port}`);
     console.log(`WebSocket server ready for connections`);
   });
+
+  metricsHistory.start();
 
   alertService.apply(alertStore.load().settings, { announce: true });
 }

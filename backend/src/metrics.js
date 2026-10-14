@@ -32,6 +32,31 @@ function cpuTotals(cpus) {
   return { idle, total };
 }
 
+async function readNetworkCounters(filePath) {
+  try {
+    const content = await fsp.readFile(filePath, 'utf8');
+    let rxBytes = 0;
+    let txBytes = 0;
+    const interfaces = [];
+
+    for (const line of content.split('\n').slice(2)) {
+      const separator = line.indexOf(':');
+      if (separator < 0) continue;
+      const name = line.slice(0, separator).trim();
+      if (!name || /^(lo|docker|veth|br-|cni|flannel|virbr)/.test(name)) continue;
+      const counters = line.slice(separator + 1).trim().split(/\s+/).map(Number);
+      if (counters.length < 9 || !Number.isFinite(counters[0]) || !Number.isFinite(counters[8])) continue;
+      rxBytes += counters[0];
+      txBytes += counters[8];
+      interfaces.push(name);
+    }
+
+    return { rxBytes, txBytes, interfaces };
+  } catch {
+    return null;
+  }
+}
+
 // Host CPU usage needs two samples, so the collector keeps the previous one.
 // The first call after startup has no baseline and reports null.
 function createHostCollector({
@@ -39,12 +64,15 @@ function createHostCollector({
   statfs = fsp.statfs,
   memAvailable = () => readMemAvailable(),
   diskPath = '/',
+  networkPath = '/host/proc/net/dev',
+  fallbackNetworkPath = '/proc/net/dev',
   // Inside a container os.hostname() is the container ID; let the operator
   // name the server as it should appear in alerts
   hostname = null,
   logger = console
 } = {}) {
   let previousCpu = null;
+  let previousNetwork = null;
 
   async function disk() {
     try {
@@ -65,6 +93,31 @@ function createHostCollector({
       logger.error(`[metrics] cannot read disk usage for ${diskPath}: ${error.message}`);
       return null;
     }
+  }
+
+  async function network() {
+    let counters = await readNetworkCounters(networkPath);
+    let source = networkPath.startsWith('/host/') ? 'server' : 'container';
+    if (!counters && fallbackNetworkPath && fallbackNetworkPath !== networkPath) {
+      counters = await readNetworkCounters(fallbackNetworkPath);
+      source = 'container';
+    }
+    if (!counters) return null;
+
+    const sampledAt = Date.now();
+    let rxBytesPerSecond = null;
+    let txBytesPerSecond = null;
+    if (previousNetwork) {
+      const elapsedSeconds = (sampledAt - previousNetwork.sampledAt) / 1000;
+      if (elapsedSeconds > 0) {
+        const rxDelta = counters.rxBytes - previousNetwork.rxBytes;
+        const txDelta = counters.txBytes - previousNetwork.txBytes;
+        if (rxDelta >= 0) rxBytesPerSecond = rxDelta / elapsedSeconds;
+        if (txDelta >= 0) txBytesPerSecond = txDelta / elapsedSeconds;
+      }
+    }
+    previousNetwork = { ...counters, sampledAt };
+    return { ...counters, rxBytesPerSecond, txBytesPerSecond, source };
   }
 
   return {
@@ -88,7 +141,8 @@ function createHostCollector({
         uptimeSeconds: osImpl.uptime(),
         cpu: { percent: cpuPercent, cores: cpus.length, loadAvg: osImpl.loadavg() },
         memory: { total: totalMem, used: totalMem - freeMem, free: freeMem, percent: percent(totalMem - freeMem, totalMem) },
-        disk: await disk()
+        disk: await disk(),
+        network: await network()
       };
     }
   };
@@ -120,6 +174,15 @@ function containerMemory(stats) {
   return { used, limit, percent: percent(used, limit) };
 }
 
+function containerNetwork(stats) {
+  const networks = Object.values(stats?.networks || {});
+  if (!networks.length) return { rxBytes: 0, txBytes: 0 };
+  return networks.reduce((total, network) => ({
+    rxBytes: total.rxBytes + (Number(network.rx_bytes) || 0),
+    txBytes: total.txBytes + (Number(network.tx_bytes) || 0)
+  }), { rxBytes: 0, txBytes: 0 });
+}
+
 function statsFor(container) {
   return new Promise((resolve, reject) => {
     container.stats({ stream: false }, (err, data) => (err ? reject(err) : resolve(data)));
@@ -145,7 +208,8 @@ async function collectContainers(docker, { logger = console } = {}) {
       restartCount: 0,
       oomKilled: false,
       cpuPercent: null,
-      memory: null
+      memory: null,
+      network: null
     };
 
     const container = docker.getContainer(summary.Id);
@@ -168,6 +232,7 @@ async function collectContainers(docker, { logger = console } = {}) {
         const stats = await statsFor(container);
         info.cpuPercent = containerCpuPercent(stats);
         info.memory = containerMemory(stats);
+        info.network = containerNetwork(stats);
       } catch (error) {
         logger.error(`[metrics] stats failed for ${info.name}: ${error.message}`);
       }
@@ -183,5 +248,7 @@ module.exports = {
   readMemAvailable,
   containerCpuPercent,
   containerMemory,
+  containerNetwork,
+  readNetworkCounters,
   percent
 };
