@@ -61,6 +61,7 @@ function createApp({
   alerts = null,
   // createContainerActions(...) result; off unless given
   containerActions = null,
+  hostCollector = null,
   wsRevalidateIntervalMs = 30 * 1000,
   wsAuthTimeoutMs = 10 * 1000
 }) {
@@ -1350,6 +1351,21 @@ function createApp({
   // Health check (no auth required)
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  // Host-wide metrics are only available to admins. Container access is
+  // already admin-only here because this snapshot includes every container.
+  app.get('/api/monitor/snapshot', authMiddleware, adminMiddleware, async (req, res) => {
+    if (!hostCollector) {
+      return res.status(503).json({ error: 'Monitoring is not configured' });
+    }
+    try {
+      const host = await hostCollector.collect();
+      res.json({ timestamp: new Date().toISOString(), host });
+    } catch (error) {
+      console.error('Monitor snapshot error:', error);
+      res.status(500).json({ error: 'Failed to collect monitor snapshot' });
+    }
   });
 
   // Docker info (auth required). Non-admins only get counts over the

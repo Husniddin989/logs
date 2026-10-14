@@ -7,6 +7,7 @@ import Login from './components/Login';
 import ChangePassword from './components/ChangePassword';
 import UserManagement from './components/UserManagement';
 import AlertSettings from './components/AlertSettings';
+import MonitorDashboard from './components/MonitorDashboard';
 import { getLogLevel } from './utils/logLevel';
 import { tokenExpiresAt } from './utils/token';
 import './App.css';
@@ -35,6 +36,7 @@ function App() {
   const [token, setToken] = useState(null);
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [showAlerts, setShowAlerts] = useState(false);
+  const [showMonitor, setShowMonitor] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
 
   // App state
@@ -105,6 +107,7 @@ function App() {
     setShowAlerts(false);
     setActionUnlock(null);
     setActionsEnabled(false);
+    setShowMonitor(false);
     setContainers([]);
     setSelectedContainer(null);
     setLogsMap({});
@@ -633,11 +636,16 @@ function App() {
       return;
     }
 
-    if (isStreaming && wsRef.current) {
-      wsRef.current.send(JSON.stringify({ action: 'unsubscribe' }));
+    const ws = wsRef.current;
+    // The live-stream effect subscribes after authentication succeeds. Ignore
+    // clicks while the socket is still connecting so send() cannot throw.
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    if (isStreaming) {
+      ws.send(JSON.stringify({ action: 'unsubscribe' }));
       setIsStreaming(false);
-    } else if (selectedContainer && wsRef.current) {
-      wsRef.current.send(JSON.stringify({
+    } else if (selectedContainer) {
+      ws.send(JSON.stringify({
         action: 'subscribe',
         containerId: selectedContainer.fullId,
         filter: searchTerm
@@ -658,6 +666,16 @@ function App() {
         onChanged={handlePasswordChanged}
         onCancel={mustChangePassword ? handleSignOut : () => setShowChangePassword(false)}
         onSessionExpired={handleLogout}
+      />
+    );
+  }
+
+  if (showMonitor && user.role === 'admin') {
+    return (
+      <MonitorDashboard
+        onBack={() => setShowMonitor(false)}
+        onSessionExpired={handleLogout}
+        containers={containers}
       />
     );
   }
@@ -708,6 +726,11 @@ function App() {
             {user.role === 'admin' && (
               <button className="admin-btn" onClick={() => setShowUserManagement(true)}>
                 Users
+              </button>
+            )}
+            {user.role === 'admin' && (
+              <button className="admin-btn" onClick={() => setShowMonitor(true)}>
+                Monitor
               </button>
             )}
             {user.role === 'admin' && (

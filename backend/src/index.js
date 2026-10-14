@@ -9,6 +9,7 @@ const { ensureAdminAccount, removeUserWildcardGrants } = require('./bootstrap');
 const { createAlertSettingsStore, defaultsFromConfig } = require('./alertSettings');
 const { createAlertService } = require('./alertService');
 const { createContainerActions } = require('./containerActions');
+const { createHostCollector } = require('./metrics');
 
 async function main() {
   const config = loadConfig(process.env);
@@ -47,13 +48,18 @@ async function main() {
     diskPath: config.alerts.diskPath,
     apiBase: config.alerts.telegram.apiBase
   });
+  const hostCollector = createHostCollector({
+    diskPath: config.alerts.diskPath,
+    hostname: config.alerts.hostname || null
+  });
 
   const { server } = createApp({
     docker, userStore, tokens, audit,
     trustProxy: config.trustProxy,
     corsOrigins: config.corsOrigins,
     alerts: { store: alertStore, service: alertService },
-    containerActions: createContainerActions({ docker, ...config.containerActions })
+    containerActions: createContainerActions({ docker, ...config.containerActions }),
+    hostCollector,
   });
 
   console.log(`[startup] container actions ${config.containerActions.enabled ? 'enabled for admins' : 'disabled'}`);

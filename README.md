@@ -14,6 +14,7 @@ Real-time Docker container log viewer with user authentication and access contro
 - Container stats monitoring (CPU, RAM, Uptime, Size)
 - Admin container actions: start, stop, restart, delete (password re-entry required)
 - Telegram alerts for the server, containers, Postgres and Redis
+- Admin Monitor dashboard with server CPU/RAM/disk charts and live container usage
 - Dark theme UI
 
 ## Quick Start
@@ -161,6 +162,7 @@ services:
 | `/api/containers/:id/actions` | POST | Admin + `X-Action-Token`: `{ "action": "start" \| "stop" \| "restart" \| "remove", "confirm": "<name>" }` (confirm only for remove) |
 | `/api/container-actions` | GET | Admin: whether container actions are enabled |
 | `/api/docker/info` | GET | Docker system info |
+| `/api/monitor/snapshot` | GET (Admin) | Host CPU, RAM and disk metrics |
 
 ### WebSocket
 
@@ -243,6 +245,7 @@ docker-log-viewer/
 │   ├── src/
 │   │   ├── App.js            # Main React component
 │   │   ├── components/
+│   │   │   ├── MonitorDashboard.js
 │   │   │   ├── Login.js
 │   │   │   ├── LogViewer.js
 │   │   │   ├── LogFilters.js
