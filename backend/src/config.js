@@ -41,8 +41,8 @@ function parseDuration(value, name) {
 }
 
 // Which proxies may set X-Forwarded-For (Express "trust proxy" syntax). The
-// default trusts private-network hops only - the frontend nginx container and
-// a reverse proxy on the Docker host - so the client IP in audit logs is the
+// default trusts private-network hops only - such as a reverse proxy on the
+// Docker host - so the client IP in audit logs is the
 // first public address and cannot be spoofed by a client-supplied header.
 function parseTrustProxy(value) {
   if (value === undefined || value === '') return 'loopback, linklocal, uniquelocal';

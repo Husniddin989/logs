@@ -1,9 +1,9 @@
 # Nginx Konfiguratsiyasi (host)
 
-TLS shu host nginx'da tugaydi va u `127.0.0.1:2000` dagi frontend
-container'iga proxy qiladi. HSTS va server banner faqat shu qatlamda
-sozlanadi (container nginx'i xavfsizlik headerlarini o'zi ham qo'shadi, lekin
-HSTS TLS tugaydigan joyda bo'lishi shart).
+TLS shu host nginx'da tugaydi va u `127.0.0.1:2000` dagi yagona ilova
+container'iga proxy qiladi. Bu container frontend fayllari, API va WebSocket'ni
+birgalikda xizmat qiladi. HSTS va server banner TLS tugaydigan host nginx'da
+sozlanadi.
 
 Quyidagi misollarda `logs.example.com` o'rniga o'z domeningizni yozing.
 

@@ -1,0 +1,9 @@
+.git
+.DS_Store
+image.png
+**/node_modules
+frontend/build
+backend/src/data
+.env
+.env.*
+*.log

@@ -35,8 +35,9 @@ umuman ishga tushmaydi.
 
 ```bash
 git pull
+docker compose down --remove-orphans
 docker compose up -d --build
-docker compose logs backend | grep -E '\[security\]|\[startup\]|audit'
+docker compose logs app | grep -E '\[security\]|\[startup\]|audit'
 ```
 
 Kutiladigan natija:
@@ -70,7 +71,7 @@ TLS va host nginx chetlab o'tiladi). Tekshiring va yoping:
 
 ```bash
 ss -ltnp | grep ':2000'          # 0.0.0.0:2000 bo'lsa ochiq
-ufw deny 2000/tcp                 # yoki docker-compose.yml da "127.0.0.1:2000:80"
+ufw deny 2000/tcp                 # Compose faqat 127.0.0.1:2000 portini ochadi
 ```
 
 ## 4. Birinchi login va parollar rotatsiyasi
@@ -112,7 +113,7 @@ chiqqan har qanday secret (DB parollari, API kalitlari, tokenlar) ni
 Deploydan keyin yangi audit log:
 
 ```bash
-docker exec docker-log-viewer-backend sh -c \
+docker exec docker-log-viewer sh -c \
   "grep -E 'auth.login|access.denied|admin\.' /app/src/data/audit.log | tail -100"
 ```
 

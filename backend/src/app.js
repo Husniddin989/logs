@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
+const path = require('path');
 const proxyaddr = require('proxy-addr');
 const WebSocket = require('ws');
 const { createAuditLogger } = require('./audit');
@@ -62,6 +63,7 @@ function createApp({
   // createContainerActions(...) result; off unless given
   containerActions = null,
   hostCollector = null,
+  frontendBuildDir = process.env.FRONTEND_BUILD_DIR || null,
   wsRevalidateIntervalMs = 30 * 1000,
   wsAuthTimeoutMs = 10 * 1000
 }) {
@@ -70,8 +72,9 @@ function createApp({
   const server = http.createServer(app);
   const wss = new WebSocket.Server({ server, maxPayload: 64 * 1024 });
 
-  // The frontend is served from the same origin as the API (nginx proxies
-  // /api and /ws to the backend), so cross-origin requests are not needed.
+  // The frontend and API are served from the same origin by this app, so
+  // cross-origin requests are not needed. Host nginx forwards /api and /ws
+  // to this Node server without changing their paths.
   // By default no CORS headers are sent, which limits the browser API to the
   // app's own origin. Set CORS_ORIGINS only if a separate frontend origin
   // must call the API.
@@ -87,6 +90,19 @@ function createApp({
 
   // Do not advertise the framework
   app.disable('x-powered-by');
+
+  // The app container serves the compiled frontend directly. Keep the same
+  // browser protections that were previously added by the frontend nginx.
+  app.use((req, res, next) => {
+    res.set({
+      'X-Frame-Options': 'DENY',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'Permissions-Policy': 'geolocation=(), microphone=(), camera=()',
+      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+    });
+    next();
+  });
 
   // Client IPs in audit entries come from X-Forwarded-For only across trusted
   // proxy hops (see TRUST_PROXY)
@@ -1399,6 +1415,25 @@ function createApp({
       res.status(500).json({ error: 'Failed to get Docker info' });
     }
   });
+
+  if (frontendBuildDir) {
+    const indexFile = path.join(frontendBuildDir, 'index.html');
+    const frontendStatic = express.static(frontendBuildDir, { index: false });
+    app.get(/\.map$/, (req, res) => res.sendStatus(404));
+    app.use((req, res, next) => {
+      if (req.path === '/api' || req.path.startsWith('/api/') || req.path === '/ws' || req.path.startsWith('/ws/')) {
+        return next();
+      }
+      return frontendStatic(req, res, next);
+    });
+    app.get('*', (req, res, next) => {
+      if (req.path === '/api' || req.path.startsWith('/api/')) return next();
+      if (req.path === '/ws' || req.path.startsWith('/ws/')) return res.sendStatus(404);
+      res.sendFile(indexFile, error => {
+        if (error) next(error);
+      });
+    });
+  }
 
   return { app, server, wss };
 }

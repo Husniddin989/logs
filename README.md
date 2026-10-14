@@ -39,6 +39,18 @@ nano .env
 docker compose up -d --build
 ```
 
+Production Compose runs the frontend, API and WebSocket in one
+`docker-log-viewer` container. To replace an existing two-container
+installation, stop the old containers and recreate the app while keeping named
+volumes:
+
+```bash
+docker compose down --remove-orphans
+docker compose up -d --build
+```
+
+Do not add `-v`: that would also delete the `users-data` volume.
+
 ### 3. Access the Application
 
 Open browser: `http://localhost:2000`
@@ -86,9 +98,9 @@ Edit `docker-compose.yml` to customize:
 
 ```yaml
 services:
-  frontend:
+  app:
     ports:
-      - "2000:80"  # Change 2000 to your preferred port
+      - "127.0.0.1:${FRONTEND_PORT:-2000}:2001"  # Host nginx reaches the app here
 ```
 
 ## User Management
@@ -239,7 +251,8 @@ docker-log-viewer/
 │   │   ├── config.js, bootstrap.js, passwords.js, loginThrottle.js, userStore.js
 │   │   └── data/             # Runtime data (users.json, audit.log), not in git
 │   ├── test/                 # node:test suites (npm test)
-│   ├── Dockerfile
+│   ├── Dockerfile          # Multi-stage production image with the frontend
+│   ├── Dockerfile.dev      # Backend-only development image
 │   └── package.json
 ├── frontend/
 │   ├── src/
@@ -252,7 +265,7 @@ docker-log-viewer/
 │   │   │   ├── ContainerList.js
 │   │   │   └── UserManagement.js
 │   │   └── App.css
-│   ├── Dockerfile
+│   ├── Dockerfile          # Optional standalone frontend image
 │   └── package.json
 ├── docker-compose.yml
 ├── .env.example
@@ -343,12 +356,12 @@ The backend must be able to reach the database:
 
 - the database publishes its port on the host → host `host.docker.internal`
   (mapped to the host by `docker-compose.yml`) or the server IP;
-- otherwise attach the backend to the database's Docker network and use the
+- otherwise attach the app to the database's Docker network and use the
   container name as host:
 
   ```yaml
   services:
-    backend:
+    app:
       networks: [log-viewer-network, myapp_default]
   networks:
     myapp_default:
@@ -418,9 +431,9 @@ container re-creation). Passwords, hashes and tokens are never logged.
 
 ```bash
 # Recent failed logins
-docker exec docker-log-viewer-backend sh -c "grep '\"auth.login\"' /app/src/data/audit.log | grep failure | tail -50"
+docker exec docker-log-viewer sh -c "grep '\"auth.login\"' /app/src/data/audit.log | grep failure | tail -50"
 # Everything from one IP
-docker exec docker-log-viewer-backend grep '"ip":"203.0.113.9"' /app/src/data/audit.log
+docker exec docker-log-viewer grep '"ip":"203.0.113.9"' /app/src/data/audit.log
 ```
 
 Client IPs come from `X-Forwarded-For` only across trusted hops
@@ -435,22 +448,22 @@ or rename both work).
 3. **Docker socket access** - The `:ro` mount does not make the Docker API read-only: the backend can call any Docker endpoint, so every container reference is validated and authorised server-side against the container's canonical ID/name before it reaches Docker. Container actions additionally need a fresh password re-entry and skip protected containers (see [Container Actions](#container-actions))
 4. **User data persistence** - Users are stored in a Docker volume (`users-data`)
 5. **Brute-force protection** - 5 failed password checks per account and client IP (20 per IP) lock further attempts for 15 minutes
-6. **HTTP hardening** - Security headers (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy) are set by the frontend nginx; HSTS and the server banner are handled by the host nginx (see [NGINX_SETUP.md](NGINX_SETUP.md)). CORS is same-origin by default, the framework banner (`X-Powered-By`) is disabled, and malformed request bodies get a JSON error
+6. **HTTP hardening** - Security headers (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy) are set by the app; HSTS and the server banner are handled by the host nginx (see [NGINX_SETUP.md](NGINX_SETUP.md)). CORS is same-origin by default, the framework banner (`X-Powered-By`) is disabled, and malformed request bodies get a JSON error
 7. **Nothing secret in the frontend** - Every `REACT_APP_*` value and every file in `frontend/build` is public. Production builds have no source maps, and `npm run check-build` (run by the Dockerfile) fails on source maps, credential-like strings or secret-named `REACT_APP_*` variables
 
 See [SECURITY.md](SECURITY.md) for the production upgrade and incident checklist.
 
 ## Troubleshooting
 
-### Backend does not start
+### App does not start
 
-- `docker compose logs backend | grep startup` shows the reason: missing or weak
+- `docker compose logs app | grep startup` shows the reason: missing or weak
   `JWT_SECRET`, or no admin yet and no `ADMIN_INITIAL_PASSWORD`
 
 ### Containers not showing
 
 - Ensure Docker socket is mounted: `/var/run/docker.sock:/var/run/docker.sock:ro`
-- Check backend logs: `docker compose logs backend`
+- Check app logs: `docker compose logs app`
 
 ### Login issues
 
