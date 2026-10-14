@@ -151,7 +151,57 @@ function MetricCard({ title, value, detail, samples, series, rangeMs, formatValu
   );
 }
 
-function ContainerRow({ container, selected, onSelect }) {
+function containerIdMatches(sampleId, containerId) {
+  return sampleId === containerId
+    || (typeof sampleId === 'string' && typeof containerId === 'string'
+      && (sampleId.startsWith(containerId) || containerId.startsWith(sampleId)));
+}
+
+function ContainerHistoryBars({ container, history }) {
+  const id = container.fullId || container.id;
+  const entries = history.flatMap(sample => {
+    const metrics = sample.containers?.find(item => containerIdMatches(item.id, id));
+    return metrics ? [{ timestamp: sample.timestamp, metrics }] : [];
+  });
+  const plotted = chartSamples(entries, 24);
+  const cpuValues = plotted.map(sample => sample.metrics.cpuPercent != null && Number.isFinite(Number(sample.metrics.cpuPercent)) ? Number(sample.metrics.cpuPercent) : null);
+  const memoryValues = plotted.map(sample => sample.metrics.memory?.percent != null && Number.isFinite(Number(sample.metrics.memory.percent)) ? Number(sample.metrics.memory.percent) : null);
+  const cpuPeak = Math.max(1, ...cpuValues.filter(Number.isFinite));
+  const memoryPeak = Math.max(1, ...memoryValues.filter(Number.isFinite));
+
+  function renderBars(values, peak, seriesName, colorClass) {
+    if (!plotted.length) return <div className="monitor-vertical-bars empty" aria-label={`${seriesName} tarixi yig‘ilmoqda`} />;
+    return (
+      <div className="monitor-vertical-bars" role="img" aria-label={`${container.name} ${seriesName} tarixi`}>
+        {plotted.map((sample, index) => {
+          const value = values[index];
+          const height = value === null ? 3 : Math.max(5, (value / peak) * 92);
+          const label = value === null ? 'o‘lchov yo‘q' : `${value.toFixed(1)}%`;
+          return <i key={`${sample.timestamp}-${index}`} className={colorClass} style={{ height: `${height}%` }} title={`${new Date(sample.timestamp).toLocaleString()} · ${seriesName}: ${label}`} />;
+        })}
+      </div>
+    );
+  }
+
+  const latest = plotted[plotted.length - 1]?.metrics;
+  const latestCpu = latest?.cpuPercent == null ? null : Number(latest.cpuPercent);
+  const latestMemory = latest?.memory?.percent == null ? null : Number(latest.memory.percent);
+
+  return (
+    <div className="monitor-container-history-bars">
+      <div className="monitor-mini-series">
+        <div className="monitor-mini-series-label"><span><i className="cpu" />CPU</span><strong>{Number.isFinite(latestCpu) ? formatPercent(latestCpu) : '—'}</strong></div>
+        {renderBars(cpuValues, cpuPeak, 'CPU', 'cpu')}
+      </div>
+      <div className="monitor-mini-series">
+        <div className="monitor-mini-series-label"><span><i className="memory" />RAM</span><strong>{Number.isFinite(latestMemory) ? formatPercent(latestMemory) : '—'}</strong></div>
+        {renderBars(memoryValues, memoryPeak, 'RAM', 'memory')}
+      </div>
+    </div>
+  );
+}
+
+function ContainerRow({ container, selected, onSelect, history }) {
   const running = container.state === 'running';
   return (
     <tr className={selected ? 'is-selected' : ''} onClick={onSelect}>
@@ -174,6 +224,7 @@ function ContainerRow({ container, selected, onSelect }) {
           </div>
         ) : '—'}
       </td>
+      <td><ContainerHistoryBars container={container} history={history} /></td>
       <td>{formatBytes(Number(container.networkRxBytes))}</td>
       <td>{formatBytes(Number(container.networkTxBytes))}</td>
     </tr>
@@ -346,22 +397,6 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
     <main className="monitor-page">
       <header className="monitor-page-header">
         <div className="monitor-heading-copy">
-          <div className="monitor-brand-row">
-            <span className="monitor-brand-mark" aria-hidden="true">
-              <svg viewBox="0 0 48 48" role="presentation">
-                <path className="monitor-brand-cube" d="M24 5 41 14.5v19L24 43 7 33.5v-19L24 5Z" />
-                <path className="monitor-brand-grid" d="M7.5 14.8 24 24l16.5-9.2M24 24v18M15 10l17 9.5v7" />
-                <path className="monitor-brand-pulse" d="m17 30 4.3-4.3 4.1 4.1 6.6-7" />
-                <circle className="monitor-brand-spark" cx="32" cy="22.8" r="2" />
-              </svg>
-            </span>
-            <span className="monitor-brand-name">
-              <strong>DOCKER LOG VIEWER</strong>
-              <small>SERVER MONITOR</small>
-            </span>
-            <span className="monitor-brand-divider" aria-hidden="true" />
-            <span className="monitor-brand-status"><i className="monitor-live-dot" /> Kuzatuv faol</span>
-          </div>
           <h1>Resurslar holati</h1>
           <p>{host?.hostname || 'Server va Docker containerlari'} · ko‘rsatkichlar vaqt bo‘yicha saqlanadi</p>
         </div>
@@ -455,13 +490,13 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
         </div>
         <div className="monitor-table-wrap">
           <table className="monitor-table">
-            <thead><tr><th>Container</th><th>Holat</th><th>CPU</th><th>RAM</th><th>Qabul qildi</th><th>Yubordi</th></tr></thead>
+            <thead><tr><th>Container</th><th>Holat</th><th>CPU</th><th>RAM</th><th>CPU / RAM tarixi</th><th>Qabul qildi</th><th>Yubordi</th></tr></thead>
             <tbody>
               {sortedContainers.map(container => {
                 const id = container.fullId || container.id;
-                return <ContainerRow key={id} container={container} selected={id === activeContainerId} onSelect={() => setSelectedContainerId(id)} />;
+                return <ContainerRow key={id} container={container} selected={id === activeContainerId} onSelect={() => setSelectedContainerId(id)} history={history} />;
               })}
-              {!sortedContainers.length && !snapshotLoading && <tr><td colSpan="6" className="monitor-empty">Container topilmadi</td></tr>}
+              {!sortedContainers.length && !snapshotLoading && <tr><td colSpan="7" className="monitor-empty">Container topilmadi</td></tr>}
             </tbody>
           </table>
         </div>
@@ -469,7 +504,7 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
 
       <section className="monitor-section monitor-container-history">
         <div className="monitor-section-heading">
-          <div><h2>Container tarixi</h2><p>{activeContainer?.name || latestContainerSample?.name || 'Tanlangan container'} · tanlangan vaqt bo‘yicha CPU, RAM va network</p></div>
+          <div><h2>Container tarixi</h2><p>{activeContainer?.name || latestContainerSample?.name || 'Tanlangan container'} · tanlangan vaqt bo‘yicha CPU, RAM va tarmoq</p></div>
           {containerOptions.length > 0 && (
             <label className="monitor-container-picker">Container
               <select value={activeContainerId} onChange={event => setSelectedContainerId(event.target.value)}>
