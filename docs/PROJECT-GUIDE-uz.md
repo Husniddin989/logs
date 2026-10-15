@@ -64,6 +64,12 @@ Vaqt filtrlari: live, 5/15/30 daqiqa, 1/3/6/12/24 soat, 3 yoki 7 kun va qo‘lda
 
 Backend ishga tushganda `metricsHistory` tarix faylini o‘qiydi, eskirgan yozuvlarni tozalaydi, darhol bir o‘lchov oladi va keyin har 60 soniyada yig‘adi. Tarix monitoring sahifasidagi tanlangan vaqtga qarab API’dan olinadi. UI’da 1 soat, 6 soat, 24 soat, 3 kun yoki maxsus vaqt oralig‘i bor.
 
+Grafiklar ustiga sichqonchani olib borsangiz, o‘sha daqiqadagi aniq vaqt va qiymatlar ko‘rinadi. Har kartada tanlangan davr uchun **o‘rtacha** va **eng yuqori** qiymat yoziladi (eng yuqori qiymat ustiga olib borilsa, uning vaqti chiqadi). Uzoq davrlarda grafik nuqtalari siyraklashtirilganda har bo‘lakdagi eng katta qiymat saqlanadi, shuning uchun qisqa CPU sakrashlari yo‘qolib qolmaydi. Gauge’dagi raqam rangi holatni bildiradi: yashil < 75%, sariq 75–90%, qizil ≥ 90%.
+
+Containerlar jadvalini ustun nomini bosib saralash mumkin (nomi, CPU, RAM, qabul/yuborilgan trafik); qatorni bossangiz, pastdagi «Container tarixi» shu container’ga o‘tadi. CPU/RAM tarixi ustunlari mutlaq shkalada: ustun balandligi haqiqiy foizni ko‘rsatadi.
+
+Monitor sahifasi Inter shriftidan foydalanadi; shrift ilova ichida joylashgan (tashqi CDN’dan yuklanmaydi), shuning uchun CSP buzilmaydi va har kompyuterda bir xil ko‘rinadi.
+
 ### Server ko‘rsatkichlari
 
 | Ko‘rsatkich | Qanday hisoblanadi |
