@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import '@fontsource-variable/inter';
 import './MonitorDashboard.css';
 
 const API_URL = process.env.REACT_APP_API_URL || '';
@@ -51,12 +52,80 @@ function axisTime(timestamp, rangeMs) {
   return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
-function chartSamples(samples, limit = 700) {
+// Keeps at most `limit` points for drawing. With `peakValue`, each bucket
+// keeps its highest sample, so short spikes survive the downsampling.
+function chartSamples(samples, limit = 700, peakValue = null) {
   if (samples.length <= limit) return samples;
-  const step = Math.ceil((samples.length - 1) / (limit - 1));
-  const result = samples.filter((_, index) => index % step === 0);
-  if (result[result.length - 1] !== samples[samples.length - 1]) result.push(samples[samples.length - 1]);
+  const bucketSize = samples.length / limit;
+  const result = [];
+  for (let bucket = 0; bucket < limit; bucket += 1) {
+    const from = Math.floor(bucket * bucketSize);
+    const to = Math.min(samples.length, Math.floor((bucket + 1) * bucketSize));
+    let chosen = samples[from];
+    if (peakValue) {
+      let best = -Infinity;
+      for (let index = from; index < to; index += 1) {
+        const value = peakValue(samples[index]);
+        if (Number.isFinite(value) && value > best) {
+          best = value;
+          chosen = samples[index];
+        }
+      }
+    }
+    if (chosen && result[result.length - 1] !== chosen) result.push(chosen);
+  }
+  const last = samples[samples.length - 1];
+  if (result[result.length - 1] !== last) result.push(last);
   return result;
+}
+
+// Average and peak of one series over the selected range
+function seriesStats(samples, value) {
+  let total = 0;
+  let count = 0;
+  let max = -Infinity;
+  let maxAt = null;
+  for (const sample of samples) {
+    const current = Number(value(sample));
+    if (!Number.isFinite(current)) continue;
+    total += current;
+    count += 1;
+    if (current > max) {
+      max = current;
+      maxAt = sample.timestamp;
+    }
+  }
+  return count ? { avg: total / count, max, maxAt } : null;
+}
+
+function levelColor(percent) {
+  if (!Number.isFinite(percent)) return '#7f8ea3';
+  if (percent >= 90) return '#ff6b75';
+  if (percent >= 75) return '#f5b14c';
+  return '#3fd06a';
+}
+
+function tooltipTime(timestamp) {
+  return new Date(timestamp).toLocaleString(undefined, {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+  });
+}
+
+// Width of an element, kept up to date while the layout changes
+function useElementWidth() {
+  const ref = useRef(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return undefined;
+    const update = () => setWidth(Math.round(element.getBoundingClientRect().width));
+    update();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, width];
 }
 
 function gaugeArc(startAngle, endAngle, radius = 70) {
@@ -71,8 +140,10 @@ function gaugeArc(startAngle, endAngle, radius = 70) {
 }
 
 function ResourceGauge({ percent, value, caption }) {
-  const safePercent = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0;
-  const color = safePercent >= 90 ? '#fb5964' : safePercent >= 75 ? '#f3a641' : '#35c65a';
+  const known = Number.isFinite(percent);
+  const safePercent = known ? Math.max(0, Math.min(100, percent)) : 0;
+  // The number takes the same status colour as the arc: green, amber, red
+  const color = levelColor(known ? safePercent : NaN);
   const startAngle = 135;
   const endAngle = startAngle + (safePercent / 100) * 270;
   return (
@@ -82,37 +153,55 @@ function ResourceGauge({ percent, value, caption }) {
       <path d={gaugeArc(startAngle + 189, startAngle + 243)} className="monitor-gauge-threshold medium" />
       <path d={gaugeArc(startAngle + 243, startAngle + 270)} className="monitor-gauge-threshold high" />
       {safePercent > 0 && <path d={gaugeArc(startAngle, endAngle)} className="monitor-gauge-value-arc" style={{ stroke: color }} />}
-      <text x="120" y="91" textAnchor="middle" className="monitor-gauge-value">{value}</text>
-      <text x="120" y="111" textAnchor="middle" className="monitor-gauge-caption">{caption}</text>
-      <text x="38" y="145" textAnchor="middle" className="monitor-gauge-scale">0%</text>
-      <text x="202" y="145" textAnchor="middle" className="monitor-gauge-scale">100%</text>
+      <text x="120" y="96" textAnchor="middle" className="monitor-gauge-value" style={{ fill: color }}>{value}</text>
+      <text x="120" y="119" textAnchor="middle" className="monitor-gauge-caption">{caption}</text>
+      <text x="40" y="148" textAnchor="middle" className="monitor-gauge-scale">0%</text>
+      <text x="200" y="148" textAnchor="middle" className="monitor-gauge-scale">100%</text>
     </svg>
   );
 }
 
-function MetricChart({ samples, series, rangeMs, formatValue, maxValue, label }) {
-  const plottedSamples = chartSamples(samples);
+const AXIS_CHAR_WIDTH = 7.4; // ~12px Inter digits
+
+// Line chart drawn at its real pixel size, so axis text stays readable in
+// small cards. Hovering shows the exact time and values.
+function MetricChart({ samples, series, rangeMs, formatValue, maxValue, label, height = 210 }) {
+  const [wrapRef, measuredWidth] = useElementWidth();
+  const [hoverIndex, setHoverIndex] = useState(null);
+  const width = Math.max(160, measuredWidth || 600);
+  const plottedSamples = useMemo(
+    () => chartSamples(samples, Math.max(60, Math.round(width / 1.5)), series[0]?.value),
+    // series objects are recreated on every render, so they are not a
+    // dependency; the first series only picks which sample a bucket keeps
+    [samples, width]
+  );
+
   if (plottedSamples.length < 2) {
-    return <div className="monitor-chart-empty">Tarix yig‘ilmoqda. Grafik uchun kamida 2 ta o‘lchov kerak.</div>;
+    return (
+      <div className="monitor-chart-wrap" ref={wrapRef}>
+        <div className="monitor-chart-empty" style={{ minHeight: height }}>Tarix yig‘ilmoqda. Grafik uchun kamida 2 ta o‘lchov kerak.</div>
+      </div>
+    );
   }
 
-  const width = 760;
-  const height = 212;
-  const left = 62;
-  const right = 12;
-  const top = 12;
-  const bottom = 32;
-  const plotWidth = width - left - right;
-  const plotHeight = height - top - bottom;
-  const start = Date.parse(plottedSamples[0].timestamp);
-  const end = Date.parse(plottedSamples[plottedSamples.length - 1].timestamp);
-  const span = Math.max(1, end - start);
   const allValues = plottedSamples.flatMap(sample => series
     .map(item => item.value(sample))
     .filter(Number.isFinite));
   const ceiling = maxValue || Math.max(1, ...allValues) * 1.12;
-  const yFor = value => top + plotHeight - (Math.max(0, value) / ceiling) * plotHeight;
-  const xFor = sample => left + ((Date.parse(sample.timestamp) - start) / span) * plotWidth;
+  const yTicks = [0, 0.25, 0.5, 0.75, 1];
+  const yLabels = yTicks.map(fraction => formatValue(ceiling * fraction));
+  const left = Math.ceil(Math.max(...yLabels.map(text => text.length)) * AXIS_CHAR_WIDTH) + 14;
+  const right = 14;
+  const top = 10;
+  const bottom = 28;
+  const plotWidth = Math.max(40, width - left - right);
+  const plotHeight = height - top - bottom;
+  const start = Date.parse(plottedSamples[0].timestamp);
+  const end = Date.parse(plottedSamples[plottedSamples.length - 1].timestamp);
+  const span = Math.max(1, end - start);
+  const yFor = value => top + plotHeight - (Math.min(Math.max(0, value), ceiling) / ceiling) * plotHeight;
+  const xForTime = time => left + ((time - start) / span) * plotWidth;
+  const xFor = sample => xForTime(Date.parse(sample.timestamp));
 
   const paths = series.flatMap(item => {
     const segments = [];
@@ -127,32 +216,93 @@ function MetricChart({ samples, series, rangeMs, formatValue, maxValue, label })
       }
     });
     if (segment.length) segments.push(segment.join(' '));
-    return segments.map((d, index) => <path key={`${item.key}-${index}`} d={d} fill="none" stroke={item.color} strokeWidth="2.4" vectorEffect="non-scaling-stroke" />);
+    return segments.map((d, index) => <path key={`${item.key}-${index}`} d={d} fill="none" stroke={item.color} strokeWidth="2" strokeLinejoin="round" />);
   });
 
-  const xTicks = Array.from({ length: 5 }, (_, index) => {
-    const timestamp = new Date(start + (span * index) / 4).toISOString();
-    return { timestamp, position: index / 4 };
-  });
+  // As many time labels as fit without overlapping
+  const xTickCount = Math.max(2, Math.min(6, Math.floor(plotWidth / 92) + 1));
+  const xTicks = Array.from({ length: xTickCount }, (_, index) => ({
+    time: start + (span * index) / (xTickCount - 1),
+    position: index / (xTickCount - 1)
+  }));
+
+  function handlePointerMove(event) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const time = start + ((x - left) / plotWidth) * span;
+    let low = 0;
+    let high = plottedSamples.length - 1;
+    while (high - low > 1) {
+      const middle = (low + high) >> 1;
+      if (Date.parse(plottedSamples[middle].timestamp) < time) low = middle;
+      else high = middle;
+    }
+    const nearest = Math.abs(Date.parse(plottedSamples[low].timestamp) - time) <= Math.abs(Date.parse(plottedSamples[high].timestamp) - time) ? low : high;
+    setHoverIndex(nearest);
+  }
+
+  const hovered = hoverIndex !== null ? plottedSamples[hoverIndex] : null;
+  const hoverX = hovered ? xFor(hovered) : 0;
 
   return (
-    <div className="monitor-chart-wrap">
-      <svg className="monitor-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={label}>
-        {[0, 0.25, 0.5, 0.75, 1].map(fraction => {
+    <div className="monitor-chart-wrap" ref={wrapRef}>
+      <svg
+        className="monitor-chart"
+        width={width}
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label={label}
+        onPointerMove={handlePointerMove}
+        onPointerLeave={() => setHoverIndex(null)}
+      >
+        {yTicks.map((fraction, index) => {
           const y = top + plotHeight - fraction * plotHeight;
           return (
             <g key={fraction}>
               <line x1={left} x2={width - right} y1={y} y2={y} className="monitor-chart-grid" />
-              <text x={left - 9} y={y + 4} textAnchor="end" className="monitor-chart-axis-label">{formatValue(ceiling * fraction)}</text>
+              <text x={left - 8} y={y + 4} textAnchor="end" className="monitor-chart-axis-label">{yLabels[index]}</text>
             </g>
           );
         })}
-        {xTicks.map((tick, index) => {
-          const x = left + tick.position * plotWidth;
-          return <text key={`${tick.timestamp}-${index}`} x={x} y={height - 7} textAnchor={index === 0 ? 'start' : index === 4 ? 'end' : 'middle'} className="monitor-chart-axis-label">{axisTime(tick.timestamp, rangeMs)}</text>;
-        })}
+        {xTicks.map((tick, index) => (
+          <text
+            key={index}
+            x={left + tick.position * plotWidth}
+            y={height - 7}
+            textAnchor={index === 0 ? 'start' : index === xTickCount - 1 ? 'end' : 'middle'}
+            className="monitor-chart-axis-label"
+          >
+            {axisTime(tick.time, rangeMs)}
+          </text>
+        ))}
         {paths}
+        {hovered && (
+          <g className="monitor-chart-hover">
+            <line x1={hoverX} x2={hoverX} y1={top} y2={top + plotHeight} />
+            {series.map(item => {
+              const value = item.value(hovered);
+              return Number.isFinite(value)
+                ? <circle key={item.key} cx={hoverX} cy={yFor(value)} r="4" style={{ fill: item.color }} />
+                : null;
+            })}
+          </g>
+        )}
       </svg>
+      {hovered && (
+        <div
+          className={`monitor-chart-tooltip ${hoverX > width / 2 ? 'left' : 'right'}`}
+          style={{ left: hoverX, top }}
+        >
+          <time>{tooltipTime(hovered.timestamp)}</time>
+          {series.map(item => (
+            <span key={item.key}>
+              <i style={{ backgroundColor: item.color }} />{item.label}
+              <strong>{Number.isFinite(item.value(hovered)) ? formatValue(item.value(hovered)) : '—'}</strong>
+            </span>
+          ))}
+        </div>
+      )}
       {series.length > 1 && (
         <div className="monitor-chart-legend">
           {series.map(item => <span key={item.key}><i style={{ backgroundColor: item.color }} />{item.label}</span>)}
@@ -160,6 +310,22 @@ function MetricChart({ samples, series, rangeMs, formatValue, maxValue, label })
       )}
     </div>
   );
+}
+
+// "o‘rtacha 32.1% · eng yuqori 87.4% (14:05)" for the selected range
+function RangeStats({ samples, series, formatValue }) {
+  const parts = series.map(item => {
+    const stats = seriesStats(samples, item.value);
+    if (!stats) return null;
+    const prefix = series.length > 1 ? `${item.label}: ` : '';
+    return (
+      <span key={item.key} title={stats.maxAt ? `Eng yuqori qiymat vaqti: ${new Date(stats.maxAt).toLocaleString()}` : undefined}>
+        {prefix}o‘rtacha <b>{formatValue(stats.avg)}</b> · eng yuqori <b>{formatValue(stats.max)}</b>
+      </span>
+    );
+  }).filter(Boolean);
+  if (!parts.length) return null;
+  return <div className="monitor-range-stats">{parts}</div>;
 }
 
 function MetricCard({ title, value, detail, samples, series, rangeMs, formatValue, maxValue, tone }) {
@@ -170,6 +336,7 @@ function MetricCard({ title, value, detail, samples, series, rangeMs, formatValu
         <strong>{value}</strong>
       </div>
       <p className="monitor-metric-detail">{detail}</p>
+      <RangeStats samples={samples} series={series} formatValue={formatValue} />
       <MetricChart
         samples={samples}
         series={series}
@@ -185,14 +352,16 @@ function MetricCard({ title, value, detail, samples, series, rangeMs, formatValu
 function GaugeMetricCard({ title, detail, percent, value, caption, samples, series, rangeMs, formatValue, maxValue, tone }) {
   return (
     <article className={`monitor-metric-card monitor-gauge-card ${tone || ''}`}>
-      <div className="monitor-gauge-heading"><strong>{title}</strong><span>{detail}</span></div>
+      <div className="monitor-gauge-heading"><strong>{title}</strong><span title={detail}>{detail}</span></div>
       <ResourceGauge percent={percent} value={value} caption={caption} />
+      <RangeStats samples={samples} series={series} formatValue={formatValue} />
       <MetricChart
         samples={samples}
         series={series}
         rangeMs={rangeMs}
         formatValue={formatValue}
         maxValue={maxValue}
+        height={150}
         label={`${title} vaqt bo‘yicha grafigi`}
       />
     </article>
@@ -245,11 +414,14 @@ function ContainerHistoryBars({ container, history }) {
     const metrics = sample.containers?.find(item => containerIdMatches(item.id, id));
     return metrics ? [{ timestamp: sample.timestamp, metrics }] : [];
   });
-  const plotted = chartSamples(entries, 24);
+  const plotted = chartSamples(entries, 24, sample => Number(sample.metrics.cpuPercent));
   const cpuValues = plotted.map(sample => sample.metrics.cpuPercent != null && Number.isFinite(Number(sample.metrics.cpuPercent)) ? Number(sample.metrics.cpuPercent) : null);
   const memoryValues = plotted.map(sample => sample.metrics.memory?.percent != null && Number.isFinite(Number(sample.metrics.memory.percent)) ? Number(sample.metrics.memory.percent) : null);
-  const cpuPeak = Math.max(1, ...cpuValues.filter(Number.isFinite));
-  const memoryPeak = Math.max(1, ...memoryValues.filter(Number.isFinite));
+  // Absolute scales: a bar's height is the real share, not a share of this
+  // container's own peak (which drew 0.1% RAM as a full bar). CPU can pass
+  // 100% on several cores, so its scale grows when it does.
+  const cpuPeak = Math.max(100, ...cpuValues.filter(Number.isFinite));
+  const memoryPeak = 100;
 
   function renderBars(values, peak, seriesName, colorClass) {
     if (!plotted.length) return <div className="monitor-vertical-bars empty" aria-label={`${seriesName} tarixi yig‘ilmoqda`} />;
@@ -257,7 +429,7 @@ function ContainerHistoryBars({ container, history }) {
       <div className="monitor-vertical-bars" role="img" aria-label={`${container.name} ${seriesName} tarixi`}>
         {plotted.map((sample, index) => {
           const value = values[index];
-          const height = value === null ? 3 : Math.max(5, (value / peak) * 92);
+          const height = value === null ? 3 : Math.max(4, (value / peak) * 100);
           const label = value === null ? 'o‘lchov yo‘q' : `${value.toFixed(1)}%`;
           return <i key={`${sample.timestamp}-${index}`} className={colorClass} style={{ height: `${height}%` }} title={`${new Date(sample.timestamp).toLocaleString()} · ${seriesName}: ${label}`} />;
         })}
@@ -296,7 +468,12 @@ function ContainerRow({ container, selected, onSelect, history }) {
           </span>
         </button>
       </td>
-      <td><span className={`monitor-state ${running ? 'running' : 'stopped'}`}>{running ? 'Ishlayapti' : 'To‘xtagan'}</span></td>
+      <td>
+        <div className="monitor-state-cell">
+          <span className={`monitor-state ${running ? 'running' : 'stopped'}`}>{running ? 'Ishlayapti' : 'To‘xtagan'}</span>
+          {container.status && <small>{container.status}</small>}
+        </div>
+      </td>
       <td>{running ? formatPercent(Number(container.cpuPercent)) : '—'}</td>
       <td>
         {running ? (
@@ -328,6 +505,8 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
   const [speedTestLoading, setSpeedTestLoading] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [selectedContainerId, setSelectedContainerId] = useState('');
+  // Container table order: running first, then by the chosen column
+  const [sort, setSort] = useState({ key: 'cpu', direction: 'desc' });
   const snapshotBusy = useRef(false);
   const historyBusy = useRef(false);
   const onSessionExpiredRef = useRef(onSessionExpired);
@@ -451,10 +630,40 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
   const loadPercent = host?.cpu?.cores
     ? (Number(host.cpu.loadAvg?.[0]) / host.cpu.cores) * 100
     : null;
-  const sortedContainers = useMemo(() => [...containers].sort((a, b) => {
-    if ((a.state === 'running') !== (b.state === 'running')) return a.state === 'running' ? -1 : 1;
-    return Number(b.cpuPercent || 0) - Number(a.cpuPercent || 0);
-  }), [containers]);
+  const sortedContainers = useMemo(() => {
+    const valueOf = {
+      name: item => item.name || '',
+      cpu: item => Number(item.cpuPercent || 0),
+      memory: item => Number(item.memPercent || 0),
+      rx: item => Number(item.networkRxBytes || 0),
+      tx: item => Number(item.networkTxBytes || 0)
+    }[sort.key];
+    const factor = sort.direction === 'asc' ? 1 : -1;
+    return [...containers].sort((a, b) => {
+      if ((a.state === 'running') !== (b.state === 'running')) return a.state === 'running' ? -1 : 1;
+      const left = valueOf(a);
+      const right = valueOf(b);
+      const order = typeof left === 'string' ? left.localeCompare(right) : left - right;
+      return order * factor || (a.name || '').localeCompare(b.name || '');
+    });
+  }, [containers, sort]);
+
+  function sortBy(key) {
+    setSort(current => (current.key === key
+      ? { key, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+      : { key, direction: key === 'name' ? 'asc' : 'desc' }));
+  }
+
+  function sortHeader(id, children) {
+    const active = sort.key === id;
+    return (
+      <th key={id} aria-sort={active ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}>
+        <button type="button" className={`monitor-sort ${active ? 'active' : ''}`} onClick={() => sortBy(id)}>
+          {children}<span aria-hidden="true">{active ? (sort.direction === 'asc' ? ' ▲' : ' ▼') : ' ↕'}</span>
+        </button>
+      </th>
+    );
+  }
   const containerOptions = useMemo(() => {
     const options = new Map();
     sortedContainers.forEach(item => {
@@ -645,12 +854,22 @@ export default function MonitorDashboard({ onBack, onSessionExpired, containers 
 
       <section className="monitor-section">
         <div className="monitor-section-heading monitor-container-heading">
-          <div><h2>Containerlar</h2><p>Joriy CPU, RAM va ishga tushgandan beri tarmoq trafigi</p></div>
+          <div><h2>Containerlar</h2><p>Joriy CPU, RAM va ishga tushgandan beri tarmoq trafigi · ustun nomini bosib saralang, qatorni bosib tarixini oching</p></div>
           <span className="monitor-sample-count">{sortedContainers.filter(item => item.state === 'running').length} / {sortedContainers.length} ishlayapti</span>
         </div>
         <div className="monitor-table-wrap">
           <table className="monitor-table">
-            <thead><tr><th>Container</th><th>Holat</th><th>CPU</th><th>RAM</th><th>CPU / RAM tarixi</th><th>Qabul qildi</th><th>Yubordi</th></tr></thead>
+            <thead>
+              <tr>
+                {sortHeader('name', 'Container')}
+                <th>Holat</th>
+                {sortHeader('cpu', 'CPU')}
+                {sortHeader('memory', 'RAM')}
+                <th>CPU / RAM tarixi</th>
+                {sortHeader('rx', 'Qabul qildi')}
+                {sortHeader('tx', 'Yubordi')}
+              </tr>
+            </thead>
             <tbody>
               {sortedContainers.map(container => {
                 const id = container.fullId || container.id;
