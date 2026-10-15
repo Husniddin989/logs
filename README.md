@@ -19,6 +19,10 @@ Real-time Docker container log viewer with user authentication and access contro
 - Admin-only, manual server internet speed test with download, upload and latency history retained for up to 72 hours
 - Dark theme log viewer and monitor dashboard
 
+## O‘zbekcha qo‘llanma
+
+Loyihaning arxitekturasi, Docker loglari oqimi, kirish huquqlari, monitoring va qo‘lda tezlik testi haqida: [Logs loyihasi qanday ishlaydi](docs/PROJECT-GUIDE-uz.md).
+
 ## Quick Start
 
 ### 1. Clone and Configure
