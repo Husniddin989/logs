@@ -7,3 +7,9 @@
 # that hash at startup. Rewriting history would not un-publish it.
 b84750fb5e79c86603a75b992b42d4a2823d6288:backend/src/data/users.json:runtime-user-data:0
 b84750fb5e79c86603a75b992b42d4a2823d6288:backend/src/data/users.json:bcrypt-password-hash:6
+#
+# 233c0ce (Uzbek project guide): false positive. The generic-api-key rule
+# matched the Uzbek words "autentifikatsiya/ruxsatlar" (authentication /
+# permissions) in the table describing backend/src/app.js; there is no
+# secret on that line.
+233c0ce04b4927684c841e80db9ba3c9965b4c08:docs/PROJECT-GUIDE-uz.md:generic-api-key:36
